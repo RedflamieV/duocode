@@ -214,6 +214,10 @@ function itemPart(item, prev) {
         status: item.status === 'inProgress' ? 'running' : item.status === 'completed' ? 'ok' : 'error',
       };
     }
+    case 'contextCompaction':
+      return { id: item.id, kind: 'tool', icon: 'compact', title: 'Контекст сжат', status: 'ok' };
+    case 'exitedReviewMode':
+      return item.review ? { id: item.id, kind: 'text', text: item.review } : null;
     case 'webSearch':
       return { id: item.id, kind: 'tool', icon: 'web', title: 'Поиск в интернете', subtitle: item.query, status: 'ok' };
     default:
@@ -225,7 +229,7 @@ function itemPart(item, prev) {
  * Один ход Codex в треде. События — как у runClaude: part, draft, session, done.
  * onApproval(kind, data) → Promise<'allow'|'allowSession'|'deny'>
  */
-function runCodex(server, { prompt, attachments, plan, threadId, fork, cwd, mode, model, effort, config, instructions, onApproval, onQuestion }) {
+function runCodex(server, { prompt, action, review, attachments, plan, threadId, fork, cwd, mode, model, effort, config, instructions, onApproval, onQuestion }) {
   const turnMode = plan ? 'plan' : mode;
   const ev = new EventEmitter();
   const parts = new Map();
@@ -291,6 +295,11 @@ function runCodex(server, { prompt, attachments, plan, threadId, fork, cwd, mode
             status: 'ok',
             todos: plan.map((s) => ({ text: s.step, status: s.status === 'inProgress' ? 'in_progress' : s.status })),
           });
+          break;
+        }
+        case 'thread/tokenUsage/updated': {
+          const u = params.tokenUsage || {};
+          ev.emit('context', { used: u.last ? u.last.totalTokens : null, window: u.modelContextWindow || null });
           break;
         }
         case 'error':
@@ -395,7 +404,15 @@ function runCodex(server, { prompt, attachments, plan, threadId, fork, cwd, mode
     };
     if (model) turnParams.model = model;
     if (effort) turnParams.effort = effort;
-    const t = await server.request('turn/start', turnParams);
+    if (action === 'compact') {
+      // сжатие идёт отдельным ходом; его id придёт в уведомлениях
+      await server.request('thread/compact/start', { threadId: tid });
+      return;
+    }
+    const t =
+      action === 'review'
+        ? await server.request('review/start', { threadId: tid, delivery: 'inline', target: review ? { type: 'custom', instructions: review } : { type: 'uncommittedChanges' } })
+        : await server.request('turn/start', turnParams);
     turnId = t.turn.id;
     if (ev.stopped) server.request('turn/interrupt', { threadId: tid, turnId }).catch(() => {});
   })().catch((err) => finish({ text: '', error: err.message }));

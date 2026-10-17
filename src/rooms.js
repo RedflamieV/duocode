@@ -9,6 +9,7 @@ const { EventEmitter } = require('events');
 const { runClaude, toolPart } = require('./agents/claude');
 const { runCodex } = require('./agents/codex');
 const { clip, uid } = require('./agents/util');
+const { expandCodexPrompt, REVIEW_PROMPT, CODEX_INIT_PROMPT } = require('./commands');
 
 const AGENTS = ['claude', 'codex'];
 const NAME = { claude: 'Claude', codex: 'Codex' };
@@ -19,11 +20,13 @@ const INSTRUCTIONS = {
 - You have the tool mcp__duo__ask_codex. Use it to delegate a task to Codex, to get an independent review or a second opinion, or whenever the user asks you to involve Codex. Codex's final answer comes back to you as the tool result, and the user watches Codex work live in the chat.
 - A message may start with a <duocode_context> block. It is the part of the shared chat you did not take part in (messages addressed to Codex and Codex's answers). Treat it as shared chat history.
 - Do not delegate trivial things, and do not ask Codex to redo finished work unless the user wants a comparison.
+- When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Codex yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Codex costs the user's Codex limits.
 - Reply in the language the user writes in.`,
   codex: `You are running inside DuoCode, a desktop app where the user works with two coding agents in one shared chat: you (Codex, by OpenAI) and Claude Code (by Anthropic). Both of you work in the same project folder.
 - You have the MCP tool ask_claude (server "duo"). Use it to delegate a task to Claude, to get an independent review or a second opinion, or whenever the user asks you to involve Claude. Claude's final answer comes back to you as the tool result, and the user watches Claude work live in the chat.
 - A message may start with a <duocode_context> block. It is the part of the shared chat you did not take part in (messages addressed to Claude and Claude's answers). Treat it as shared chat history.
 - Do not delegate trivial things, and do not ask Claude to redo finished work unless the user wants a comparison.
+- When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Claude yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Claude costs the user's Claude limits.
 - Reply in the language the user writes in.`,
 };
 
@@ -71,7 +74,7 @@ class Rooms extends EventEmitter {
     const running = {};
     for (const a of AGENTS) running[a] = [...this.runs.values()].some((r) => r.room.id === room.id && r.agent === a);
     const waiting = [...this.approvals.values()].some((ap) => ap.room.id === room.id);
-    return { id: room.id, title: room.title, cwd: room.cwd, updatedAt: room.updatedAt, settings: room.settings, running, waiting };
+    return { id: room.id, title: room.title, cwd: room.cwd, updatedAt: room.updatedAt, settings: room.settings, context: room.context || {}, running, waiting };
   }
 
   list() {
@@ -93,7 +96,7 @@ class Rooms extends EventEmitter {
       cwd,
       createdAt: now,
       updatedAt: now,
-      settings: { mode: 'ask', claudeModel: '', claudeEffort: '', codexModel: '', codexEffort: '' },
+      settings: { mode: 'ask', delegation: 'auto', claudeModel: '', claudeEffort: '', codexModel: '', codexEffort: '' },
       sessions: { claude: null, codex: null },
       seen: { claude: now, codex: now },
       messages: [],
@@ -153,6 +156,7 @@ class Rooms extends EventEmitter {
     targets = (targets || []).filter((t) => AGENTS.includes(t));
     if (!room || (!text && !attachments.length) || !targets.length) return;
     if (!text) text = 'Посмотри вложения.';
+    if (/^\/[\w:.-]+/.test(text)) return this.command(room, text, targets);
 
     // Агенту, который сейчас работает, сообщение дописывается прямо в идущую работу.
     const fresh = [];
@@ -184,6 +188,57 @@ class Rooms extends EventEmitter {
       }
     }
     this.markDirty(room, userMsg);
+    this.touch(room);
+  }
+
+  // Команды «/». Встроенные работают для обоих агентов, остальные — свои команды Claude и промпты Codex.
+  command(room, text, targets) {
+    const [, name, rest = ''] = /^\/([\w:.-]+)\s*([\s\S]*)$/.exec(text);
+    const args = rest.trim();
+    const userMsg = { id: uid('m'), role: 'user', text, targets, ts: Date.now(), queued: [], command: name };
+    room.messages.push(userMsg);
+    this.markDirty(room, userMsg);
+    const note = (t) => {
+      const m = { id: uid('m'), role: 'system', ts: Date.now(), text: t };
+      room.messages.push(m);
+      this.markDirty(room, m);
+    };
+
+    for (const agent of targets) {
+      const busy = this.main.has(`${room.id}:${agent}`);
+      if (name === 'clear') {
+        if (busy) {
+          note(`${NAME[agent]} сейчас работает — начать с чистого листа можно после.`);
+          continue;
+        }
+        room.sessions[agent] = null;
+        room.seen[agent] = Date.now();
+        if (room.context) room.context[agent] = null;
+        note(`${NAME[agent]} начинает с чистого листа: прошлая переписка этого чата ему больше не видна.`);
+        continue;
+      }
+      if (busy) {
+        note(`${NAME[agent]} сейчас работает — команда /${name} доступна, когда он закончит.`);
+        continue;
+      }
+      if (name === 'compact') {
+        if (!room.sessions[agent]) note(`У ${NAME[agent]} пока нечего сжимать.`);
+        else if (agent === 'claude') this.runAgent(room, agent, { prompt: '/compact', raw: true });
+        else this.runAgent(room, agent, { prompt: '', raw: true, action: 'compact' });
+      } else if (name === 'review') {
+        if (agent === 'claude') this.runAgent(room, agent, { prompt: REVIEW_PROMPT + (args ? `\n\nОсобое внимание: ${args}` : '') });
+        else this.runAgent(room, agent, { prompt: '', raw: true, action: 'review', review: args || null });
+      } else if (name === 'init') {
+        if (agent === 'claude') this.runAgent(room, agent, { prompt: '/init', raw: true });
+        else this.runAgent(room, agent, { prompt: CODEX_INIT_PROMPT });
+      } else if (agent === 'claude') {
+        this.runAgent(room, agent, { prompt: text, raw: true });
+      } else {
+        const expanded = expandCodexPrompt(name, args);
+        if (expanded) this.runAgent(room, agent, { prompt: expanded });
+        else note(`У Codex нет команды /${name}. Свои команды Codex лежат в папке ~/.codex/prompts.`);
+      }
+    }
     this.touch(room);
   }
 
@@ -237,7 +292,7 @@ class Rooms extends EventEmitter {
     return `<duocode_context>\nЧто произошло в общем чате DuoCode без тебя:\n${lines.join('\n')}\n</duocode_context>\n\n`;
   }
 
-  runAgent(room, agent, { prompt, attachments = [], plan = false, requestedBy = null, parentId = null }) {
+  runAgent(room, agent, { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null }) {
     const key = `${room.id}:${agent}`;
     const fork = this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
     const msg = {
@@ -258,7 +313,8 @@ class Rooms extends EventEmitter {
     room.messages.push(msg);
     if (!fork) this.main.set(key, msg.id);
 
-    let fullPrompt = this.buildContext(room, agent);
+    // raw: команда Claude должна стоять в самом начале сообщения, без сводки чата
+    let fullPrompt = raw ? '' : this.buildContext(room, agent);
     if (requestedBy) {
       fullPrompt += `[Запрос от ${NAME[requestedBy]} через DuoCode. Твой итоговый ответ целиком вернётся ${NAME[requestedBy]}, поэтому отвечай по делу и самодостаточно.]\n\n`;
     }
@@ -305,6 +361,8 @@ class Rooms extends EventEmitter {
     } else {
       handle = runCodex(this.codex, {
         prompt: fullPrompt,
+        action,
+        review,
         attachments,
         plan,
         threadId: room.sessions.codex,
@@ -351,6 +409,14 @@ class Rooms extends EventEmitter {
       this.markDirty(room, msg);
     });
     handle.on('ratelimit', (info) => this.emit('claude-ratelimit', info));
+    handle.on('context', (c) => {
+      if (fork) return;
+      if (!room.context) room.context = {};
+      const cur = { ...(room.context[agent] || {}) };
+      for (const [k, v] of Object.entries(c)) if (v != null) cur[k] = v;
+      room.context[agent] = cur;
+      this.emitRooms();
+    });
     handle.on('warning', (w) => {
       if (w) msg.warning = w;
       this.markDirty(room, msg);
@@ -515,11 +581,22 @@ class Rooms extends EventEmitter {
     if (!to || to === agent) return { isError: true, text: `Неизвестный инструмент ${tool}` };
     const prompt = String(args.prompt || '').trim();
     if (!prompt) return { isError: true, text: 'Пустой запрос' };
+    const policy = room.settings.delegation || 'auto';
+    if (policy === 'off') {
+      return { isError: true, text: `Пользователь запретил в этом чате вызывать ${NAME[to]}. Справься сам.` };
+    }
     if (from.msg.requestedBy) {
       return {
         isError: true,
         text: `Этот ход уже выполняется по запросу ${NAME[from.msg.requestedBy]}, поэтому вызвать ${NAME[to]} отсюда нельзя (иначе агенты будут ждать друг друга вечно). Ответь сам — ответ вернётся ${NAME[from.msg.requestedBy]}.`,
       };
+    }
+
+    if (policy === 'ask') {
+      const r = await this.requestApproval(room, from.msg, { title: `${NAME[agent]} хочет подключить ${NAME[to]}`, subtitle: clip(prompt, 600) });
+      if ((typeof r === 'object' ? r.decision : r) === 'deny') {
+        return { isError: true, text: `Пользователь не разрешил подключать ${NAME[to]} для этого запроса. Продолжай сам.` };
+      }
     }
 
     const part = { id: uid('d'), kind: 'delegate', to, prompt, status: 'running', childId: null };

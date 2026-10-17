@@ -11,6 +11,7 @@ const { CodexServer } = require('./src/agents/codex');
 const { getClaudeLimits } = require('./src/claudeLimits');
 const { getCodexLimits, parseRateLimits } = require('./src/codexLimits');
 const { allSessions, claudeToday, codexToday } = require('./src/history');
+const { listCommands } = require('./src/commands');
 
 fixPath();
 
@@ -19,12 +20,24 @@ if (!app.requestSingleInstanceLock()) app.quit();
 // ---------- Настройки ----------
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
-const defaults = { projects: [], claudeCommand: 'claude', codexCommand: 'codex', refreshMinutes: 3 };
+const APPEARANCE = {
+  theme: 'system',
+  fontSize: 14,
+  chatWidth: 'normal',
+  density: 'comfortable',
+  codeFont: 'auto',
+  steps: 'detailed',
+  expandThinking: false,
+  sendKey: 'enter',
+  showCost: true,
+};
+const defaults = { projects: [], claudeCommand: 'claude', codexCommand: 'codex', refreshMinutes: 3, appearance: APPEARANCE };
 let settings = { ...defaults };
 
 function loadSettings() {
   try {
-    settings = { ...defaults, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) };
+    const saved = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+    settings = { ...defaults, ...saved, appearance: { ...APPEARANCE, ...(saved.appearance || {}) } };
   } catch {
     settings = { ...defaults };
   }
@@ -230,10 +243,34 @@ function checkForUpdates(manual = false) {
 
 // ---------- Окно ----------
 
+// Цвета фона тем — для окна и системных кнопок в заголовке (сами темы описаны в styles.css).
+const THEMES = {
+  dark: { base: 'dark', color: '#141519', symbolColor: '#c9ccd3' },
+  light: { base: 'light', color: '#f4f4f2', symbolColor: '#3b3d42' },
+  midnight: { base: 'dark', color: '#0d1117', symbolColor: '#c9d1d9' },
+  graphite: { base: 'dark', color: '#1e1e1e', symbolColor: '#cccccc' },
+  sepia: { base: 'light', color: '#f5efe3', symbolColor: '#3b3226' },
+  paper: { base: 'light', color: '#ffffff', symbolColor: '#333333' },
+};
+
+function currentTheme() {
+  const t = THEMES[settings.appearance.theme];
+  if (t) return t;
+  return nativeTheme.shouldUseDarkColors ? THEMES.dark : THEMES.light;
+}
+
+function applyTheme() {
+  const t = THEMES[settings.appearance.theme];
+  nativeTheme.themeSource = t ? t.base : 'system';
+  if (win && !win.isDestroyed()) {
+    win.setBackgroundColor(currentTheme().color);
+    if (process.platform !== 'darwin') win.setTitleBarOverlay(themeColors());
+  }
+}
+
 function themeColors() {
-  return nativeTheme.shouldUseDarkColors
-    ? { color: '#141519', symbolColor: '#c9ccd3' }
-    : { color: '#f4f4f2', symbolColor: '#3b3d42' };
+  const { color, symbolColor } = currentTheme();
+  return { color, symbolColor };
 }
 
 function createWindow() {
@@ -244,7 +281,7 @@ function createWindow() {
     minWidth: 860,
     minHeight: 560,
     title: 'DuoCode',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#141519' : '#f4f4f2',
+    backgroundColor: currentTheme().color,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     ...overlay,
     webPreferences: {
@@ -370,11 +407,17 @@ function bindIpc() {
   ipcMain.handle('update:check', () => checkForUpdates(true));
   ipcMain.handle('app:version', () => app.getVersion());
 
+  ipcMain.handle('commands:list', (_e, cwd) => listCommands(cwd));
+
   ipcMain.handle('settings:get', () => settings);
   ipcMain.handle('settings:set', (_e, patch) => {
     const restartCodex = patch.codexCommand && patch.codexCommand !== settings.codexCommand;
-    settings = { ...settings, ...patch };
+    settings = { ...settings, ...patch, appearance: { ...settings.appearance, ...(patch.appearance || {}) } };
     saveSettings();
+    if (patch.appearance) {
+      applyTheme();
+      if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
+    }
     if (restartCodex) codex.stop();
     return settings;
   });
@@ -418,6 +461,7 @@ app.whenReady().then(async () => {
   codex.on('ratelimits', onCodexRateLimit);
 
   bindIpc();
+  nativeTheme.themeSource = THEMES[settings.appearance.theme] ? THEMES[settings.appearance.theme].base : 'system';
   createWindow();
   win.on('focus', () => isWin && win.flashFrame(false));
 

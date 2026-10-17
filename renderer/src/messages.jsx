@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'preact/hooks';
+import { useState, useMemo, useContext } from 'preact/hooks';
+import { PrefsContext } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { renderMarkdown } from './markdown.js';
 import { Attachments } from './attachments.jsx';
@@ -115,7 +116,8 @@ function ToolPart({ part, cwd }) {
 }
 
 function Thinking({ part }) {
-  const [open, setOpen] = useState(false);
+  const prefs = useContext(PrefsContext);
+  const [open, setOpen] = useState(prefs.expandThinking);
   return (
     <div class={`thinking ${open ? 'open' : ''}`}>
       <button class="tool-row" onClick={() => setOpen(!open)}>
@@ -347,35 +349,103 @@ function Delegate({ part, from, room, byId }) {
   );
 }
 
+const STEP_WORDS = {
+  terminal: ['команда', 'команды', 'команд'],
+  edit: ['правка', 'правки', 'правок'],
+  read: ['чтение', 'чтения', 'чтений'],
+  search: ['поиск', 'поиска', 'поисков'],
+  web: ['запрос в сеть', 'запроса в сеть', 'запросов в сеть'],
+};
+
+function plural(n, [one, few, many]) {
+  const d = n % 10;
+  const h = n % 100;
+  if (d === 1 && h !== 11) return one;
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return few;
+  return many;
+}
+
+// Подряд идущие шаги (команды, чтение, правки, размышления) одной строкой «N шагов».
+function StepsGroup({ steps, cwd }) {
+  const [open, setOpen] = useState(false);
+  const running = steps.some((s) => s.status === 'running');
+  const failed = steps.some((s) => s.status === 'error');
+  const counts = {};
+  for (const s of steps) if (STEP_WORDS[s.icon]) counts[s.icon] = (counts[s.icon] || 0) + 1;
+  const summary = Object.entries(counts)
+    .map(([k, n]) => `${n} ${plural(n, STEP_WORDS[k])}`)
+    .join(', ');
+  const last = steps[steps.length - 1];
+  return (
+    <div class={`steps-group ${open ? 'open' : ''}`}>
+      <button class="tool-row" onClick={() => setOpen(!open)}>
+        <Icon name="todo" size={14} class="tool-icon" />
+        <span class="tool-title">
+          {steps.length} {plural(steps.length, ['шаг', 'шага', 'шагов'])}
+        </span>
+        <span class="tool-sub">{running ? `${last.title}${last.subtitle ? ': ' + last.subtitle : ''}` : summary}</span>
+        <span class="tool-status">{running ? <span class="spinner" /> : failed ? <Icon name="x" size={14} class="err" /> : <Icon name="check" size={14} class="ok" />}</span>
+        <Icon name={open ? 'down' : 'right'} size={14} class="chev" />
+      </button>
+      {open && (
+        <div class="steps-body">
+          {steps.map((p) => (p.kind === 'thinking' ? <Thinking key={p.id} part={p} /> : <ToolPart key={p.id} part={p} cwd={cwd} />))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Parts({ msg, room, byId }) {
-  return msg.parts.map((p) => {
-    switch (p.kind) {
-      case 'text':
-        return <Markdown key={p.id} text={p.text} />;
-      case 'thinking':
-        return <Thinking key={p.id} part={p} />;
-      case 'tool':
-        return <ToolPart key={p.id} part={p} cwd={room.cwd} />;
-      case 'approval':
-        return <Approval key={p.id} part={p} roomId={room.id} agent={msg.agent} />;
-      case 'question':
-        return <Question key={p.id} part={p} roomId={room.id} agent={msg.agent} />;
-      case 'planReady':
-        return <PlanReady key={p.id} part={p} roomId={room.id} msgId={msg.id} agent={msg.agent} />;
-      case 'steer':
-        return (
-          <div class="steer" key={p.id}>
-            <span class="steer-label">Вы дописали</span>
-            <div class="bubble">{p.text}</div>
-            <Attachments items={p.attachments || []} />
-          </div>
-        );
-      case 'delegate':
-        return <Delegate key={p.id} part={p} from={msg.agent} room={room} byId={byId} />;
-      default:
-        return null;
+  const prefs = useContext(PrefsContext);
+  if (prefs.steps === 'grouped') {
+    const out = [];
+    let group = [];
+    const flush = () => {
+      if (group.length === 1) out.push(group[0].kind === 'thinking' ? <Thinking key={group[0].id} part={group[0]} /> : <ToolPart key={group[0].id} part={group[0]} cwd={room.cwd} />);
+      else if (group.length) out.push(<StepsGroup key={group[0].id} steps={group} cwd={room.cwd} />);
+      group = [];
+    };
+    for (const p of msg.parts) {
+      if ((p.kind === 'tool' && p.icon !== 'todo') || p.kind === 'thinking') group.push(p);
+      else {
+        flush();
+        out.push(renderPart(p, msg, room, byId));
+      }
     }
-  });
+    flush();
+    return out;
+  }
+  return msg.parts.map((p) => renderPart(p, msg, room, byId));
+}
+
+function renderPart(p, msg, room, byId) {
+  switch (p.kind) {
+    case 'text':
+      return <Markdown key={p.id} text={p.text} />;
+    case 'thinking':
+      return <Thinking key={p.id} part={p} />;
+    case 'tool':
+      return <ToolPart key={p.id} part={p} cwd={room.cwd} />;
+    case 'approval':
+      return <Approval key={p.id} part={p} roomId={room.id} agent={msg.agent} />;
+    case 'question':
+      return <Question key={p.id} part={p} roomId={room.id} agent={msg.agent} />;
+    case 'planReady':
+      return <PlanReady key={p.id} part={p} roomId={room.id} msgId={msg.id} agent={msg.agent} />;
+    case 'steer':
+      return (
+        <div class="steer" key={p.id}>
+          <span class="steer-label">Вы дописали</span>
+          <div class="bubble">{p.text}</div>
+          <Attachments items={p.attachments || []} />
+        </div>
+      );
+    case 'delegate':
+      return <Delegate key={p.id} part={p} from={msg.agent} room={room} byId={byId} />;
+    default:
+      return null;
+  }
 }
 
 function fmtTime(ts) {
@@ -389,6 +459,7 @@ function duration(msg) {
 }
 
 export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
+  const prefs = useContext(PrefsContext);
   const [copied, setCopied] = useState(false);
   const running = msg.status === 'running';
   const empty = !msg.parts.length && !msg.draft;
@@ -432,7 +503,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
               Попросить {NAME[peerOf(msg.agent)]} проверить
             </button>
           )}
-          <span class="msg-meta">
+          <span class="msg-meta" hidden={!prefs.showCost}>
             {fmtTime(msg.ts)}
             {duration(msg) ? ` · ${duration(msg)}` : ''}
             {msg.cost ? ` · $${msg.cost.toFixed(3)}` : ''}

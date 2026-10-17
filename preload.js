@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('duo', {
   refreshLimits: () => ipcRenderer.invoke('limits:refresh'),
   history: () => ipcRenderer.invoke('history:get'),
   codexModels: () => ipcRenderer.invoke('codex:models'),
+  commands: (cwd) => ipcRenderer.invoke('commands:list', cwd),
   checkEnv: () => ipcRenderer.invoke('env:check'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
@@ -45,5 +46,6 @@ contextBridge.exposeInMainWorld('duo', {
   onLimits: on('limits'),
   onOpenRoom: on('open-room'),
   onUpdate: on('update'),
+  onSettings: on('settings'),
   platform: process.platform,
 });

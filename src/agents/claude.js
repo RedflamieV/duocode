@@ -77,6 +77,8 @@ function toolPart(id, name, input = {}) {
   }
 }
 
+const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n || 0));
+
 function resultText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((c) => (c && c.type === 'text' ? c.text : '')).join('\n');
@@ -158,6 +160,14 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
     switch (e.type) {
       case 'system':
         if (e.subtype === 'init' && e.session_id) ev.emit('session', e.session_id, e.model);
+        if (e.subtype === 'compact_boundary' && e.compact_metadata) {
+          const m = e.compact_metadata;
+          emitPart({ id: `c${n++}`, kind: 'tool', icon: 'compact', status: 'ok', title: 'Контекст сжат', subtitle: `${fmtK(m.pre_tokens)} → ${fmtK(m.post_tokens)} токенов` });
+          ev.emit('context', { used: m.post_tokens });
+        }
+        break;
+      case 'autocompact_state':
+        if (e.value && e.value.effective_window) ev.emit('context', { window: e.value.effective_window, threshold: e.value.threshold });
         break;
       case 'stream_event': {
         const se = e.event || {};
@@ -174,6 +184,8 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
       }
       case 'assistant': {
         if (e.parent_tool_use_id) break; // внутренности субагентов не показываем
+        const u = e.message && e.message.usage;
+        if (u) ev.emit('context', { used: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0) });
         for (const block of (e.message && e.message.content) || []) {
           if (block.type === 'text' && block.text) {
             lastText = block.text;
@@ -208,6 +220,7 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
         ev.emit('ratelimit', e.rate_limit_info);
         break;
       case 'result':
+        for (const mu of Object.values(e.modelUsage || {})) if (mu && mu.contextWindow) ev.emit('context', { window: mu.contextWindow });
         // дописанные сообщения могут дать ещё один ход в том же процессе, поэтому ждём закрытия
         cost += e.total_cost_usd || 0;
         result = {

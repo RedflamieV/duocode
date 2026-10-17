@@ -1,5 +1,6 @@
 import { render } from 'preact';
-import { useState, useEffect, useRef, useMemo, useCallback } from 'preact/hooks';
+import { useState, useEffect, useRef, useMemo, useCallback, useContext } from 'preact/hooks';
+import { PrefsContext, DEFAULT_PREFS, applyPrefs } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { Attachments } from './attachments.jsx';
 import { AgentMessage, UserMessage, SystemMessage, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
@@ -18,6 +19,12 @@ const CLAUDE_MODELS = [
   { id: 'opus', name: 'Opus', description: 'Самая сильная, для сложных задач' },
   { id: 'sonnet', name: 'Sonnet', description: 'Быстрая и сильная, на каждый день' },
   { id: 'haiku', name: 'Haiku', description: 'Самая быстрая и экономная' },
+];
+
+const DELEGATION = [
+  { id: 'auto', name: 'Сам решает', hint: 'Агент сам подключает напарника, когда это реально помогает' },
+  { id: 'ask', name: 'Спрашивать меня', hint: 'Перед каждым вызовом напарника — подтверждение' },
+  { id: 'off', name: 'Запрещено', hint: 'Агенты работают только поодиночке — экономия лимитов' },
 ];
 
 const CLAUDE_EFFORTS = [
@@ -230,8 +237,38 @@ function parseMention(text, fallback) {
   return { text: text.slice(m[0].length), target };
 }
 
-function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder }) {
+// Меню команд «/»: встроенные команды DuoCode, свои команды и навыки Claude, промпты Codex.
+function CommandMenu({ items, active, agents, onPick }) {
+  const ref = useRef();
+  useEffect(() => {
+    const el = ref.current && ref.current.querySelector('.cmd-item.active');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }, [active]);
+  return (
+    <div class="cmd-menu" ref={ref}>
+      {items.map((c, i) => {
+        const ok = c.agents.some((a) => agents.includes(a));
+        return (
+          <button key={c.source + c.name} class={`cmd-item ${i === active ? 'active' : ''} ${ok ? '' : 'dim'}`} onMouseDown={(e) => { e.preventDefault(); onPick(c); }}>
+            <code>/{c.name}</code>
+            <span class="cmd-desc">{c.description}</span>
+            <span class="cmd-agents" title={ok ? '' : 'Не поддерживается выбранным агентом'}>
+              {c.agents.map((a) => (
+                <i class={`dot ${a}`} key={a} />
+              ))}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [] }) {
+  const prefs = useContext(PrefsContext);
   const [text, setText] = useState('');
+  const [cmdIndex, setCmdIndex] = useState(0);
+  const [cmdHidden, setCmdHidden] = useState(false);
   const [files, setFiles] = useState([]);
   const [plan, setPlan] = useState(false);
   const [drag, setDrag] = useState(false);
@@ -253,6 +290,15 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
   const agents = TARGETS.find((t) => t.id === effective).agents;
   const steering = !plan && agents.some((a) => busy.includes(a));
   const canSend = mention.text.trim() || files.length;
+
+  const cmdQuery = /^\/([\w:.-]*)$/.exec(mention.text.trimStart());
+  const cmdItems = cmdQuery && !cmdHidden ? commands.filter((c) => c.name.toLowerCase().includes(cmdQuery[1].toLowerCase())).slice(0, 12) : [];
+  const pickCommand = (c) => {
+    const prefix = text.slice(0, text.length - mention.text.trimStart().length);
+    setText(`${prefix}/${c.name} `);
+    setCmdIndex(0);
+    if (ref.current) ref.current.focus();
+  };
 
   const addFiles = (list) => setFiles((cur) => [...cur, ...list.filter((f) => !cur.some((c) => c.path === f.path))]);
 
@@ -287,7 +333,9 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
     ? `${agents.filter((a) => busy.includes(a)).map((a) => NAME[a]).join(' и ')} сейчас работает — сообщение допишется в его работу`
     : plan
       ? 'Сначала план: агент изучит задачу и предложит план, вы его утвердите'
-      : 'Enter — отправить · Shift+Enter — новая строка';
+      : prefs.sendKey === 'ctrl'
+        ? 'Ctrl+Enter — отправить · / — команды'
+        : 'Enter — отправить · Shift+Enter — новая строка · / — команды';
 
   return (
     <div
@@ -299,16 +347,39 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
       onDragLeave={() => setDrag(false)}
       onDrop={onDrop}
     >
+      {cmdItems.length > 0 && <CommandMenu items={cmdItems} active={Math.min(cmdIndex, cmdItems.length - 1)} agents={agents} onPick={pickCommand} />}
       <Attachments items={files} onRemove={(i) => setFiles(files.filter((_, j) => j !== i))} />
       <textarea
         ref={ref}
         rows={1}
         value={text}
         placeholder={placeholder || 'Напишите задачу… (@claude или @codex — кому адресовать)'}
-        onInput={(e) => setText(e.target.value)}
+        onInput={(e) => {
+          setText(e.target.value);
+          setCmdHidden(false);
+          setCmdIndex(0);
+        }}
         onPaste={onPaste}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          if (cmdItems.length) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setCmdIndex((cmdIndex + (e.key === 'ArrowDown' ? 1 : cmdItems.length - 1)) % cmdItems.length);
+              return;
+            }
+            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && cmdItems[cmdIndex] && `/${cmdItems[cmdIndex].name}` !== mention.text.trim())) {
+              e.preventDefault();
+              pickCommand(cmdItems[Math.min(cmdIndex, cmdItems.length - 1)]);
+              return;
+            }
+            if (e.key === 'Escape') {
+              setCmdHidden(true);
+              return;
+            }
+          }
+          if (e.key !== 'Enter' || e.isComposing) return;
+          const send = prefs.sendKey === 'ctrl' ? e.ctrlKey || e.metaKey : !e.shiftKey;
+          if (send) {
             e.preventDefault();
             submit();
           }
@@ -401,7 +472,25 @@ function Select({ value, options, onChange, title }) {
 }
 
 // Настройка агента в чате: модель и уровень размышлений.
-function AgentChip({ agent, model, effort, models, efforts, onChange }) {
+function fmtK(n) {
+  if (!n) return '0';
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1).replace('.0', '')}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n);
+}
+
+// Кольцо заполненности контекста.
+function Ring({ pct, size = 16 }) {
+  const r = (size - 3) / 2;
+  const c = 2 * Math.PI * r;
+  const cls = pct >= 85 ? 'danger' : pct >= 65 ? 'warn' : '';
+  return (
+    <svg class={`ring ${cls}`} width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={size / 2} cy={size / 2} r={r} class="ring-bg" />
+      <circle cx={size / 2} cy={size / 2} r={r} class="ring-fg" stroke-dasharray={`${(c * Math.min(pct, 100)) / 100} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+    </svg>
+  );
+}
+
+function AgentChip({ agent, model, effort, models, efforts, onChange, context, onCommand }) {
   const [open, setOpen] = useState(false);
   const ref = useRef();
   useEffect(() => {
@@ -411,16 +500,50 @@ function AgentChip({ agent, model, effort, models, efforts, onChange }) {
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
   const modelName = (models.find((m) => m.id === model) || models[0]).name;
+  const pct = context && context.used && context.window ? Math.min(100, Math.round((context.used / context.window) * 100)) : null;
   return (
     <div class="menu-wrap" ref={ref}>
       <button class={`agent-chip ${open ? 'open' : ''}`} onClick={() => setOpen(!open)} title={`Модель и уровень размышлений ${NAME[agent]}`}>
         <Avatar agent={agent} size={16} />
         <span>{model ? modelName : NAME[agent]}</span>
         <span class="chip-effort">{effort ? EFFORT_NAME[effort] || effort : 'авто'}</span>
+        {pct != null && (
+          <span class="chip-context" title={`Контекст ${NAME[agent]} заполнен на ${pct}%`}>
+            <Ring pct={pct} size={14} />
+            {pct}%
+          </span>
+        )}
         <Icon name="down" size={13} />
       </button>
       {open && (
         <div class="menu agent-menu">
+          <div class="menu-section">Контекст</div>
+          <div class="context-box">
+            {pct != null ? (
+              <>
+                <div class="context-line">
+                  <Ring pct={pct} size={30} />
+                  <div>
+                    <b>{pct}% занято</b>
+                    <small>
+                      {fmtK(context.used)} из {fmtK(context.window)} токенов
+                      {context.threshold ? ` · автосжатие около ${Math.round((context.threshold / context.window) * 100)}%` : ''}
+                    </small>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <small class="muted">Появится после первого ответа {NAME[agent]} в этом чате.</small>
+            )}
+            <div class="context-actions">
+              <button class="btn small" onClick={() => { setOpen(false); onCommand('/compact'); }} title="Агент перескажет себе переписку коротко и освободит место">
+                Сжать
+              </button>
+              <button class="btn small ghost" onClick={() => { setOpen(false); onCommand('/clear'); }} title="Агент забудет переписку этого чата">
+                Начать заново
+              </button>
+            </div>
+          </div>
           <div class="menu-section">Модель {NAME[agent]}</div>
           {models.map((m) => (
             <button key={m.id} class={`menu-option ${m.id === model ? 'selected' : ''}`} onClick={() => onChange({ model: m.id })}>
@@ -462,6 +585,8 @@ function RoomHeader({ room, codexModels, onDelete }) {
   const s = room.settings;
   const set = (patch) => duo.setRoomSettings(room.id, patch);
   const mode = MODES.find((m) => m.id === s.mode) || MODES[0];
+  const ctx = room.context || {};
+  const delegation = s.delegation || 'auto';
 
   return (
     <header class="room-header drag">
@@ -503,6 +628,8 @@ function RoomHeader({ room, codexModels, onDelete }) {
           models={CLAUDE_MODELS}
           efforts={CLAUDE_EFFORTS}
           onChange={(p) => set('model' in p ? { claudeModel: p.model } : { claudeEffort: p.effort })}
+          context={ctx.claude}
+          onCommand={(text) => duo.send(room.id, { text, targets: ['claude'] })}
         />
         <AgentChip
           agent="codex"
@@ -516,13 +643,26 @@ function RoomHeader({ room, codexModels, onDelete }) {
               set({ codexModel: p.model, ...(ok ? {} : { codexEffort: '' }) });
             } else set({ codexEffort: p.effort });
           }}
+          context={ctx.codex}
+          onCommand={(text) => duo.send(room.id, { text, targets: ['codex'] })}
         />
         <div class="menu-wrap">
           <button class="icon-btn" onClick={() => setMenu(!menu)} title="Ещё">
             <Icon name="more" size={16} />
           </button>
           {menu && (
-            <div class="menu" onMouseLeave={() => setMenu(false)}>
+            <div class="menu wide-menu" onMouseLeave={() => setMenu(false)}>
+              <div class="menu-section">Вызов другого агента</div>
+              {DELEGATION.map((d) => (
+                <button key={d.id} class={`menu-option ${delegation === d.id ? 'selected' : ''}`} onClick={() => set({ delegation: d.id })}>
+                  <span class="radio" />
+                  <span>
+                    <b>{d.name}</b>
+                    <small>{d.hint}</small>
+                  </span>
+                </button>
+              ))}
+              <div class="menu-sep" />
               <button onClick={() => { setMenu(false); setEditing(true); }}>
                 <Icon name="edit" size={14} /> Переименовать
               </button>
@@ -547,6 +687,10 @@ function RoomView({ room, codexModels, onDelete }) {
     store(`target:${room.id}`, t);
   };
   const byId = useMemo(() => new Map(room.messages.map((m) => [m.id, m])), [room.messages]);
+  const [commands, setCommands] = useState([]);
+  useEffect(() => {
+    duo.commands(room.cwd).then(setCommands);
+  }, [room.cwd]);
   const top = room.messages.filter((m) => !m.parentId);
   const running = room.running && (room.running.claude || room.running.codex);
   const [scrollRef, innerRef, onScroll, stickNow] = useStickyScroll();
@@ -604,6 +748,7 @@ function RoomView({ room, codexModels, onDelete }) {
           target={target}
           setTarget={setTarget}
           autoFocus={room.id}
+          commands={commands}
         />
       </div>
     </section>
@@ -651,6 +796,10 @@ function NewChat({ settings, env, onCreated }) {
   const [target, setTarget] = useState(store('target:new') || 'both');
   const [history, setHistory] = useState([]);
   const [showAll, setShowAll] = useState(false);
+  const [commands, setCommands] = useState([]);
+  useEffect(() => {
+    duo.commands(project || null).then(setCommands);
+  }, [project]);
 
   useEffect(() => {
     duo.history().then(setHistory);
@@ -726,6 +875,7 @@ function NewChat({ settings, env, onCreated }) {
             store('target:new', t);
           }}
           autoFocus
+          commands={commands}
           placeholder="Опишите задачу. Например: «@claude спланируй, а Codex пусть проверит план»"
         />
         {history.length > 0 && (
@@ -756,17 +906,101 @@ function NewChat({ settings, env, onCreated }) {
 
 // ---------- Настройки ----------
 
-function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
-  const [version, setVersion] = useState('');
-  useEffect(() => {
-    duo.version().then(setVersion);
-  }, []);
+const THEMES = [
+  { id: 'system', name: 'Как в системе', swatch: ['#141519', '#f4f4f2'] },
+  { id: 'dark', name: 'Тёмная', swatch: ['#141519', '#1d1f25'] },
+  { id: 'light', name: 'Светлая', swatch: ['#f4f4f2', '#ffffff'] },
+  { id: 'midnight', name: 'Полночь', swatch: ['#0d1117', '#161b22'] },
+  { id: 'graphite', name: 'Графит', swatch: ['#1e1e1e', '#2a2a2b'] },
+  { id: 'sepia', name: 'Сепия', swatch: ['#f5efe3', '#fbf7ef'] },
+  { id: 'paper', name: 'Бумага', swatch: ['#ffffff', '#f7f7f7'] },
+];
+
+function Segmented({ value, options, onChange }) {
+  return (
+    <div class="segmented wide">
+      {options.map((o) => (
+        <button key={String(o.id)} class={`seg ${value === o.id ? 'active' : ''}`} onClick={() => onChange(o.id)}>
+          {o.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Switch({ checked, onChange, label, hint }) {
+  return (
+    <label class="switch-row">
+      <span>
+        <b>{label}</b>
+        {hint && <small>{hint}</small>}
+      </span>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span class="switch" />
+    </label>
+  );
+}
+
+function AppearanceTab({ prefs }) {
+  const set = (patch) => duo.setSettings({ appearance: patch });
+  return (
+    <div class="tab-body">
+      <div class="field">
+        <label>Тема</label>
+        <div class="themes">
+          {THEMES.map((t) => (
+            <button key={t.id} class={`theme-card ${prefs.theme === t.id ? 'active' : ''}`} onClick={() => set({ theme: t.id })}>
+              <span class="theme-swatch" style={{ background: `linear-gradient(135deg, ${t.swatch[0]} 50%, ${t.swatch[1]} 50%)` }}>
+                <i class="claude" />
+                <i class="codex" />
+              </span>
+              {t.name}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div class="field">
+        <label>Размер текста</label>
+        <Segmented value={prefs.fontSize} onChange={(v) => set({ fontSize: v })} options={[{ id: 13, name: 'Мелкий' }, { id: 14, name: 'Обычный' }, { id: 15, name: 'Крупный' }, { id: 16, name: 'Очень крупный' }]} />
+      </div>
+      <div class="field">
+        <label>Ширина чата</label>
+        <Segmented value={prefs.chatWidth} onChange={(v) => set({ chatWidth: v })} options={[{ id: 'narrow', name: 'Узкая' }, { id: 'normal', name: 'Обычная' }, { id: 'wide', name: 'Широкая' }, { id: 'full', name: 'Во всё окно' }]} />
+      </div>
+      <div class="field">
+        <label>Плотность</label>
+        <Segmented value={prefs.density} onChange={(v) => set({ density: v })} options={[{ id: 'comfortable', name: 'Просторно' }, { id: 'compact', name: 'Компактно' }]} />
+      </div>
+      <div class="field">
+        <label>Шаги агентов</label>
+        <Segmented value={prefs.steps} onChange={(v) => set({ steps: v })} options={[{ id: 'detailed', name: 'Каждый шаг' }, { id: 'grouped', name: 'Свёрнуто в группу' }]} />
+        <div class="field-hint">«Свёрнуто» прячет команды, чтение и правки в одну строку «N шагов» — видно только ответы и то, что требует вашего внимания.</div>
+      </div>
+      <div class="field">
+        <label>Шрифт кода</label>
+        <Segmented
+          value={prefs.codeFont}
+          onChange={(v) => set({ codeFont: v })}
+          options={[{ id: 'auto', name: 'Авто' }, { id: 'cascadia', name: 'Cascadia' }, { id: 'consolas', name: 'Consolas' }, { id: 'jetbrains', name: 'JetBrains Mono' }, { id: 'fira', name: 'Fira Code' }]}
+        />
+      </div>
+      <div class="field">
+        <label>Отправка сообщения</label>
+        <Segmented value={prefs.sendKey} onChange={(v) => set({ sendKey: v })} options={[{ id: 'enter', name: 'Enter' }, { id: 'ctrl', name: 'Ctrl+Enter' }]} />
+      </div>
+      <Switch checked={prefs.expandThinking} onChange={(v) => set({ expandThinking: v })} label="Показывать размышления развёрнутыми" hint="Иначе они свёрнуты в одну строку, открываются по клику" />
+      <Switch checked={prefs.showCost} onChange={(v) => set({ showCost: v })} label="Показывать время и стоимость под ответами" />
+    </div>
+  );
+}
+
+function AgentsTab({ settings, env, onSaved }) {
   const [claude, setClaude] = useState(settings.claudeCommand);
   const [codex, setCodex] = useState(settings.codexCommand);
+  const dirty = claude !== settings.claudeCommand || codex !== settings.codexCommand;
   const save = async () => {
     await duo.setSettings({ claudeCommand: claude.trim() || 'claude', codexCommand: codex.trim() || 'codex' });
     onSaved();
-    onClose();
   };
   const row = (agent, value, set) => (
     <div class="field">
@@ -795,47 +1029,93 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
     </div>
   );
   return (
-    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal">
-        <div class="modal-head">
-          <h2>Настройки</h2>
-          <button class="icon-btn" onClick={onClose}>
-            <Icon name="x" size={16} />
+    <div class="tab-body">
+      {row('claude', claude, setClaude)}
+      {row('codex', codex, setCodex)}
+      <p class="field-hint">
+        DuoCode запускает установленные у вас Claude Code и Codex и использует их вход и подписки. Данные чатов хранятся только на этом компьютере.
+      </p>
+      {dirty && (
+        <div class="modal-actions">
+          <button class="btn primary" onClick={save}>
+            Сохранить
           </button>
         </div>
-        {row('claude', claude, setClaude)}
-        {row('codex', codex, setCodex)}
-        <p class="field-hint">
-          DuoCode запускает установленные у вас Claude Code и Codex и использует их вход и подписки. Данные чатов хранятся только на этом компьютере.
-        </p>
-        <div class="about">
-          <span>DuoCode {version}</span>
-          <span class="muted">
+      )}
+    </div>
+  );
+}
+
+function AboutTab({ update, onUpdate }) {
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    duo.version().then(setVersion);
+  }, []);
+  return (
+    <div class="tab-body">
+      <div class="about">
+        <span class="logo">
+          <i class="claude" />
+          <i class="codex" />
+        </span>
+        <span>
+          <b>DuoCode {version}</b>
+          <small class="muted">
             {update.status === 'checking' && 'Проверяю обновления…'}
             {update.status === 'latest' && 'Установлена последняя версия'}
             {update.status === 'downloading' && `Загружается версия ${update.version}…`}
             {update.status === 'ready' && `Версия ${update.version} готова к установке`}
             {update.status === 'error' && `Не удалось проверить обновления: ${update.error}`}
             {update.status === 'dev' && 'Обновления работают только в установленной версии'}
-          </span>
-          {update.status === 'ready' ? (
-            <button class="btn small primary" onClick={() => duo.installUpdate()}>
-              Перезапустить
-            </button>
-          ) : (
-            <button class="btn small" onClick={async () => onUpdate(await duo.checkUpdate())}>
-              Проверить
-            </button>
-          )}
-        </div>
-        <div class="modal-actions">
-          <button class="btn ghost" onClick={onClose}>
-            Отмена
+            {update.status === 'idle' && 'Обновления проверяются автоматически'}
+          </small>
+        </span>
+        {update.status === 'ready' ? (
+          <button class="btn small primary" onClick={() => duo.installUpdate()}>
+            Перезапустить
           </button>
-          <button class="btn primary" onClick={save}>
-            Сохранить
+        ) : (
+          <button class="btn small" onClick={async () => onUpdate(await duo.checkUpdate())}>
+            Проверить
+          </button>
+        )}
+      </div>
+      <p class="field-hint">
+        Новые версии скачиваются в фоне и ставятся тихо: при нажатии «Перезапустить» или когда вы закрываете DuoCode. Код и релизы:{' '}
+        <a href="https://github.com/RedflamieV/duocode" target="_blank" rel="noreferrer">
+          github.com/RedflamieV/duocode
+        </a>
+      </p>
+    </div>
+  );
+}
+
+function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
+  const [tab, setTab] = useState('look');
+  const prefs = { ...DEFAULT_PREFS, ...(settings.appearance || {}) };
+  return (
+    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal settings-modal">
+        <div class="modal-head">
+          <h2>Настройки</h2>
+          <button class="icon-btn" onClick={onClose}>
+            <Icon name="x" size={16} />
           </button>
         </div>
+        <div class="tabs-row">
+          {[
+            ['look', 'Внешний вид'],
+            ['agents', 'Агенты'],
+            ['about', 'О программе'],
+          ].map(([id, name]) => (
+            <button key={id} class={`tab-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>
+              {name}
+            </button>
+          ))}
+        </div>
+        {tab === 'look' && <AppearanceTab prefs={prefs} />}
+        {tab === 'agents' && <AgentsTab settings={settings} env={env} onSaved={onSaved} />}
+        {tab === 'about' && <AboutTab update={update} onUpdate={onUpdate} />}
       </div>
     </div>
   );
@@ -899,6 +1179,7 @@ function App() {
       }),
       duo.onLimits(setLimits),
       duo.onUpdate((u) => setUpdate({ ...u })),
+      duo.onSettings((st) => setSettings(st)),
       duo.onOpenRoom((id) => open(id)),
     ];
     return () => offs.forEach((off) => off());
@@ -910,6 +1191,9 @@ function App() {
     setRoom(id ? await duo.getRoom(id) : null);
     if (id) store('lastRoom', id);
   };
+
+  const prefs = useMemo(() => ({ ...DEFAULT_PREFS, ...(settings.appearance || {}) }), [settings.appearance]);
+  useEffect(() => applyPrefs(prefs), [prefs]);
 
   useEffect(() => {
     const last = store('lastRoom');
@@ -943,6 +1227,7 @@ function App() {
   }, []);
 
   return (
+    <PrefsContext.Provider value={prefs}>
     <div class={`app platform-${duo.platform}`}>
       <Sidebar
         rooms={rooms}
@@ -975,6 +1260,7 @@ function App() {
       </main>
       {showSettings && <Settings settings={settings} env={env} update={update} onUpdate={(u) => u && setUpdate({ ...u })} onClose={() => setShowSettings(false)} onSaved={loadSettings} />}
     </div>
+    </PrefsContext.Provider>
   );
 }
 
