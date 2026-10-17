@@ -1,6 +1,7 @@
 import { render } from 'preact';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'preact/hooks';
 import { Icon, Avatar } from './icons.jsx';
+import { Attachments } from './attachments.jsx';
 import { AgentMessage, UserMessage, SystemMessage, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
 
 const duo = window.duo;
@@ -229,8 +230,11 @@ function parseMention(text, fallback) {
   return { text: text.slice(m[0].length), target };
 }
 
-function Composer({ onSend, onStop, running, target, setTarget, autoFocus, placeholder }) {
+function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder }) {
   const [text, setText] = useState('');
+  const [files, setFiles] = useState([]);
+  const [plan, setPlan] = useState(false);
+  const [drag, setDrag] = useState(false);
   const ref = useRef();
 
   useEffect(() => {
@@ -246,21 +250,63 @@ function Composer({ onSend, onStop, running, target, setTarget, autoFocus, place
 
   const mention = parseMention(text, target);
   const effective = mention.target;
+  const agents = TARGETS.find((t) => t.id === effective).agents;
+  const steering = !plan && agents.some((a) => busy.includes(a));
+  const canSend = mention.text.trim() || files.length;
 
-  const submit = () => {
-    if (!mention.text.trim()) return;
-    onSend(mention.text, TARGETS.find((t) => t.id === effective).agents);
-    setText('');
+  const addFiles = (list) => setFiles((cur) => [...cur, ...list.filter((f) => !cur.some((c) => c.path === f.path))]);
+
+  const onPaste = async (e) => {
+    const items = [...(e.clipboardData ? e.clipboardData.items : [])].filter((i) => i.kind === 'file');
+    if (!items.length) return;
+    e.preventDefault();
+    for (const item of items) {
+      const file = item.getAsFile();
+      const p = duo.pathForFile(file);
+      if (p) addFiles(await duo.describeFiles([p]));
+      else addFiles([await duo.saveAttachment(file.name || 'снимок.png', new Uint8Array(await file.arrayBuffer()))]);
+    }
   };
 
+  const onDrop = async (e) => {
+    e.preventDefault();
+    setDrag(false);
+    const paths = [...e.dataTransfer.files].map((f) => duo.pathForFile(f)).filter(Boolean);
+    if (paths.length) addFiles(await duo.describeFiles(paths));
+  };
+
+  const submit = () => {
+    if (!canSend) return;
+    onSend(mention.text, agents, { attachments: files, plan });
+    setText('');
+    setFiles([]);
+    setPlan(false);
+  };
+
+  const hint = steering
+    ? `${agents.filter((a) => busy.includes(a)).map((a) => NAME[a]).join(' и ')} сейчас работает — сообщение допишется в его работу`
+    : plan
+      ? 'Сначала план: агент изучит задачу и предложит план, вы его утвердите'
+      : 'Enter — отправить · Shift+Enter — новая строка';
+
   return (
-    <div class="composer">
+    <div
+      class={`composer ${drag ? 'drag-over' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDrag(true);
+      }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={onDrop}
+    >
+      <Attachments items={files} onRemove={(i) => setFiles(files.filter((_, j) => j !== i))} />
       <textarea
         ref={ref}
         rows={1}
         value={text}
         placeholder={placeholder || 'Напишите задачу… (@claude или @codex — кому адресовать)'}
         onInput={(e) => setText(e.target.value)}
+        onPaste={onPaste}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
@@ -269,6 +315,9 @@ function Composer({ onSend, onStop, running, target, setTarget, autoFocus, place
         }}
       />
       <div class="composer-bar">
+        <button class="icon-btn" onClick={async () => addFiles(await duo.pickAttachments())} title="Прикрепить файлы или картинки (можно вставить скриншот через Ctrl+V или перетащить)">
+          <Icon name="clip" size={16} />
+        </button>
         <div class="segmented" role="radiogroup" aria-label="Кому отправить">
           {TARGETS.map((t) => (
             <button
@@ -285,14 +334,18 @@ function Composer({ onSend, onStop, running, target, setTarget, autoFocus, place
             </button>
           ))}
         </div>
-        <span class="composer-hint">Enter — отправить · Shift+Enter — новая строка</span>
+        <button class={`toggle ${plan ? 'on' : ''}`} onClick={() => setPlan(!plan)} title="Сначала план: агент ничего не меняет, а предлагает план на утверждение">
+          <Icon name="todo" size={14} />
+          План
+        </button>
+        <span class={`composer-hint ${steering ? 'steer' : ''}`}>{hint}</span>
         {running && (
           <button class="stop-btn" onClick={onStop} title="Остановить всех агентов в этом чате">
             <Icon name="stop" size={16} />
           </button>
         )}
-        <button class="send-btn" onClick={submit} disabled={!mention.text.trim()} title="Отправить">
-          <Icon name="up" size={16} />
+        <button class="send-btn" onClick={submit} disabled={!canSend} title={steering ? 'Дописать в текущую работу' : 'Отправить'}>
+          <Icon name={steering ? 'plus' : 'up'} size={16} />
         </button>
       </div>
     </div>
@@ -498,9 +551,9 @@ function RoomView({ room, codexModels, onDelete }) {
   const running = room.running && (room.running.claude || room.running.codex);
   const [scrollRef, innerRef, onScroll, stickNow] = useStickyScroll();
 
-  const send = (text, agents) => {
+  const send = (text, agents, opts = {}) => {
     stickNow();
-    return duo.send(room.id, { text, targets: agents });
+    return duo.send(room.id, { text, targets: agents, ...opts });
   };
   const review = (msg) =>
     send(
@@ -543,7 +596,15 @@ function RoomView({ room, codexModels, onDelete }) {
         </div>
       </div>
       <div class="composer-wrap">
-        <Composer onSend={send} onStop={() => duo.stop(room.id)} running={running} target={target} setTarget={setTarget} autoFocus={room.id} />
+        <Composer
+          onSend={send}
+          onStop={() => duo.stop(room.id)}
+          running={running}
+          busy={['claude', 'codex'].filter((a) => room.running && room.running[a])}
+          target={target}
+          setTarget={setTarget}
+          autoFocus={room.id}
+        />
       </div>
     </section>
   );
@@ -603,7 +664,7 @@ function NewChat({ settings, env, onCreated }) {
     if (dir) setProject(dir);
   };
 
-  const send = async (text, agents) => {
+  const send = async (text, agents, opts = {}) => {
     let cwd = project;
     if (!cwd) {
       cwd = await duo.pickProject();
@@ -611,7 +672,7 @@ function NewChat({ settings, env, onCreated }) {
       setProject(cwd);
     }
     const room = await duo.createRoom({ cwd });
-    await duo.send(room.id, { text, targets: agents });
+    await duo.send(room.id, { text, targets: agents, ...opts });
     store(`target:${room.id}`, target);
     onCreated(room.id);
   };

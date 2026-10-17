@@ -147,28 +147,56 @@ class Rooms extends EventEmitter {
 
   // ---------- Сообщения ----------
 
-  send(id, { text, targets }) {
+  send(id, { text, targets, attachments = [], plan = false }) {
     const room = this.rooms.get(id);
     text = (text || '').trim();
     targets = (targets || []).filter((t) => AGENTS.includes(t));
-    if (!room || !text || !targets.length) return;
+    if (!room || (!text && !attachments.length) || !targets.length) return;
+    if (!text) text = 'Посмотри вложения.';
 
-    const userMsg = { id: uid('m'), role: 'user', text, targets, ts: Date.now(), queued: [] };
+    // Агенту, который сейчас работает, сообщение дописывается прямо в идущую работу.
+    const fresh = [];
+    for (const agent of targets) {
+      const mainId = this.main.get(`${room.id}:${agent}`);
+      const run = mainId && this.runs.get(mainId);
+      if (run && !plan && run.handle.steer && run.handle.steer(text, attachments)) {
+        run.msg.parts.push({ id: uid('s'), kind: 'steer', text, attachments });
+        this.markDirty(room, run.msg);
+      } else {
+        fresh.push(agent);
+      }
+    }
+    if (!fresh.length) return this.touch(room);
+
+    const userMsg = { id: uid('m'), role: 'user', text, targets: fresh, attachments, plan, ts: Date.now(), queued: [] };
     room.messages.push(userMsg);
     if (room.title === 'Новый чат') room.title = clip(text.split('\n')[0], 60);
 
-    for (const agent of targets) {
+    for (const agent of fresh) {
       const key = `${room.id}:${agent}`;
+      const job = { prompt: text, attachments, plan, userMsgId: userMsg.id };
       if (this.main.has(key)) {
         if (!this.queues.has(key)) this.queues.set(key, []);
-        this.queues.get(key).push({ prompt: text, userMsgId: userMsg.id });
+        this.queues.get(key).push(job);
         userMsg.queued.push(agent);
       } else {
-        this.runAgent(room, agent, { prompt: text });
+        this.runAgent(room, agent, job);
       }
     }
     this.markDirty(room, userMsg);
     this.touch(room);
+  }
+
+  // Кнопки под планом Codex: выполнить или доработать.
+  planAction(roomId, msgId, action, feedback) {
+    const room = this.rooms.get(roomId);
+    const msg = room && room.messages.find((m) => m.id === msgId);
+    const part = msg && msg.parts.find((p) => p.kind === 'planReady');
+    if (!part || part.status !== 'pending') return;
+    part.status = action === 'run' ? 'approved' : 'revise';
+    this.markDirty(room, msg);
+    if (action === 'run') this.send(roomId, { text: 'План утверждён. Выполняй его.', targets: [msg.agent] });
+    else this.send(roomId, { text: `Доработай план: ${feedback || ''}`.trim(), targets: [msg.agent], plan: true });
   }
 
   stop(id) {
@@ -209,7 +237,7 @@ class Rooms extends EventEmitter {
     return `<duocode_context>\nЧто произошло в общем чате DuoCode без тебя:\n${lines.join('\n')}\n</duocode_context>\n\n`;
   }
 
-  runAgent(room, agent, { prompt, requestedBy = null, parentId = null }) {
+  runAgent(room, agent, { prompt, attachments = [], plan = false, requestedBy = null, parentId = null }) {
     const key = `${room.id}:${agent}`;
     const fork = this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
     const msg = {
@@ -224,6 +252,7 @@ class Rooms extends EventEmitter {
       ts: Date.now(),
       finishedAt: null,
       fork,
+      plan,
       effort: (agent === 'claude' ? room.settings.claudeEffort : room.settings.codexEffort) || null,
     };
     room.messages.push(msg);
@@ -262,6 +291,8 @@ class Rooms extends EventEmitter {
       handle = runClaude({
         command: settings.claudeCommand,
         prompt: fullPrompt,
+        attachments,
+        plan,
         cwd: room.cwd,
         sessionId: room.sessions.claude,
         fork: fork && !!room.sessions.claude,
@@ -274,6 +305,8 @@ class Rooms extends EventEmitter {
     } else {
       handle = runCodex(this.codex, {
         prompt: fullPrompt,
+        attachments,
+        plan,
         threadId: room.sessions.codex,
         fork: fork && !!room.sessions.codex,
         cwd: room.cwd,
@@ -291,6 +324,7 @@ class Rooms extends EventEmitter {
           },
         },
         onApproval: (kind, data) => this.requestApproval(room, msg, data),
+        onQuestion: (questions) => this.requestAnswers(room, msg, questions),
       });
     }
 
@@ -332,6 +366,9 @@ class Rooms extends EventEmitter {
         msg.draft = '';
         for (const p of msg.parts) if (p.kind === 'tool' && p.status === 'running') p.status = r.error ? 'error' : 'ok';
         for (const [aid, ap] of this.approvals) if (ap.msg.id === msg.id) this.respondApproval(room.id, aid, 'deny');
+        if (plan && agent === 'codex' && msg.status === 'done' && !requestedBy) {
+          msg.parts.push({ id: uid('p'), kind: 'planReady', status: 'pending' });
+        }
         this.runs.delete(msg.id);
         if (mcpFile) fs.rm(mcpFile, () => {});
         this.markDirty(room, msg);
@@ -357,25 +394,46 @@ class Rooms extends EventEmitter {
       userMsg.queued = (userMsg.queued || []).filter((a) => a !== agent);
       this.markDirty(room, userMsg);
     }
-    this.runAgent(room, agent, { prompt: next.prompt });
+    this.runAgent(room, agent, next);
   }
 
   // ---------- Подтверждения ----------
 
   requestApproval(room, msg, data, toolName = null) {
-    const part = { id: uid('a'), kind: 'approval', status: 'pending', ...data };
+    const part = { ...data, id: uid('a'), kind: 'approval', status: 'pending' };
     msg.parts.push(part);
     this.markDirty(room, msg);
     this.emitRooms();
     this.emit('attention', room, msg, part);
-    return new Promise((resolve) => this.approvals.set(part.id, { room, msg, part, resolve, toolName }));
+    return new Promise((resolve) =>
+      this.approvals.set(part.id, { room, msg, part, toolName, resolve: (decision, feedback) => resolve(feedback ? { decision, feedback } : decision) }),
+    );
   }
 
-  respondApproval(roomId, approvalId, decision) {
+  // Вопросы агента пользователю. answers: { [questionId]: [ответы] } или null, если пропустил.
+  requestAnswers(room, msg, questions) {
+    const part = { id: uid('q'), kind: 'question', status: 'pending', questions };
+    msg.parts.push(part);
+    this.markDirty(room, msg);
+    this.emitRooms();
+    this.emit('attention', room, msg, { title: questions[0] ? questions[0].question : 'Вопрос' });
+    return new Promise((resolve) => this.approvals.set(part.id, { room, msg, part, resolve, question: true }));
+  }
+
+  respondApproval(roomId, approvalId, decision, extra) {
     const ap = this.approvals.get(approvalId);
     if (!ap || ap.room.id !== roomId) return;
     this.approvals.delete(approvalId);
+    if (ap.question) {
+      ap.part.status = decision === 'deny' ? 'skipped' : 'answered';
+      ap.part.answers = decision === 'deny' ? null : extra;
+      this.markDirty(ap.room, ap.msg);
+      this.emitRooms();
+      ap.resolve(decision === 'deny' ? null : extra);
+      return;
+    }
     ap.part.status = decision === 'deny' ? 'denied' : 'allowed';
+    if (extra) ap.part.feedback = extra;
     if (decision === 'allowSession' && ap.toolName) {
       const key = `${roomId}:claude`;
       if (!this.allowed.has(key)) this.allowed.set(key, new Set());
@@ -383,7 +441,7 @@ class Rooms extends EventEmitter {
     }
     this.markDirty(ap.room, ap.msg);
     this.emitRooms();
-    ap.resolve(decision);
+    ap.resolve(decision, extra);
   }
 
   // ---------- Мост (вызовы из bridge/mcp.js) ----------
@@ -405,6 +463,39 @@ class Rooms extends EventEmitter {
       const toolName = args.tool_name;
       const input = args.input || {};
       const allow = { text: JSON.stringify({ behavior: 'allow', updatedInput: input }) };
+      const deny = (message) => ({ text: JSON.stringify({ behavior: 'deny', message }) });
+
+      if (toolName === 'AskUserQuestion') {
+        const questions = (input.questions || []).map((q) => ({
+          id: q.question,
+          header: q.header,
+          question: q.question,
+          options: q.options || [],
+          multiSelect: !!q.multiSelect,
+          allowOther: true,
+        }));
+        const answers = await this.requestAnswers(room, from.msg, questions);
+        if (!answers) return deny('Пользователь пропустил вопрос. Продолжай на своё усмотрение или спроси обычным сообщением.');
+        const flat = {};
+        for (const [q, list] of Object.entries(answers)) flat[q] = list.join(', ');
+        return { text: JSON.stringify({ behavior: 'allow', updatedInput: { ...input, answers: flat } }) };
+      }
+
+      if (toolName === 'ExitPlanMode') {
+        const r = await this.requestApproval(room, from.msg, { title: 'Claude предлагает план', plan: input.plan || '' });
+        const decision = typeof r === 'object' ? r.decision : r;
+        if (decision === 'deny') {
+          const feedback = typeof r === 'object' ? r.feedback : '';
+          return deny(feedback ? `Пользователь просит доработать план: ${feedback}` : 'Пользователь не утвердил план. Спроси, что изменить.');
+        }
+        return allow;
+      }
+
+      // после утверждения плана Claude работает в обычном режиме — применяем режим чата сами
+      const mode = room.settings.mode;
+      const EDITS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+      if (mode === 'full' || (mode === 'edits' && EDITS.has(toolName))) return allow;
+
       const set = this.allowed.get(`${roomId}:claude`);
       if (toolName.startsWith('mcp__duo__') || (set && set.has(toolName))) return allow;
       const p = toolPart('x', toolName, input);

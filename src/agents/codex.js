@@ -1,5 +1,6 @@
 // Постоянное соединение с `codex app-server` (JSON-RPC построчно через stdio).
 // Один процесс обслуживает все чаты; события раздаются по threadId.
+const path = require('path');
 const { EventEmitter } = require('events');
 const { spawnTool } = require('../env');
 const { clip, killTree } = require('./util');
@@ -133,10 +134,26 @@ const SANDBOX = {
   ask: { approvalPolicy: 'untrusted', sandbox: 'workspace-write' },
   edits: { approvalPolicy: 'on-request', sandbox: 'workspace-write' },
   full: { approvalPolicy: 'never', sandbox: 'danger-full-access' },
+  plan: { approvalPolicy: 'never', sandbox: 'read-only' },
 };
+
+// План: Codex только изучает проект и предлагает план, ничего не меняя.
+const PLAN_PREFIX =
+  '[Режим планирования DuoCode: ничего не меняй и не запускай команды, которые что-то изменяют. Изучи проект и задачу, ' +
+  'затем закончи ответ подробным пошаговым планом. Пользователь утвердит план или попросит доработать.]\n\n';
+
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+
+function userInput(text, attachments = []) {
+  const images = attachments.filter((a) => IMAGE_EXT.has(path.extname(a.path).toLowerCase()));
+  const files = attachments.filter((a) => !images.includes(a));
+  const list = files.length ? `\n\nПриложенные файлы:\n${files.map((f) => `- ${f.path}`).join('\n')}` : '';
+  return [{ type: 'text', text: text + list, text_elements: [] }, ...images.map((i) => ({ type: 'localImage', path: i.path }))];
+}
 
 function sandboxPolicy(mode) {
   if (mode === 'full') return { type: 'dangerFullAccess' };
+  if (mode === 'plan') return { type: 'readOnly', networkAccess: true };
   return { type: 'workspaceWrite', writableRoots: [], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
 }
 
@@ -208,7 +225,8 @@ function itemPart(item, prev) {
  * Один ход Codex в треде. События — как у runClaude: part, draft, session, done.
  * onApproval(kind, data) → Promise<'allow'|'allowSession'|'deny'>
  */
-function runCodex(server, { prompt, threadId, fork, cwd, mode, model, effort, config, instructions, onApproval }) {
+function runCodex(server, { prompt, attachments, plan, threadId, fork, cwd, mode, model, effort, config, instructions, onApproval, onQuestion }) {
+  const turnMode = plan ? 'plan' : mode;
   const ev = new EventEmitter();
   const parts = new Map();
   let turnId = null;
@@ -320,7 +338,19 @@ function runCodex(server, { prompt, threadId, fork, cwd, mode, model, effort, co
           if (d === 'deny') reply({ permissions: {}, scope: 'turn' });
           else reply({ permissions: params.permissions || {}, scope: d === 'allowSession' ? 'session' : 'turn' });
         } else if (method === 'item/tool/requestUserInput') {
-          reply({ answers: {} });
+          const answers = await onQuestion(
+            (params.questions || []).map((q) => ({
+              id: q.id,
+              header: q.header,
+              question: q.question,
+              options: (q.options || []).map((o) => ({ label: o.label, description: o.description })),
+              multiSelect: false,
+              allowOther: q.isOther !== false,
+            })),
+          );
+          const out = {};
+          for (const [id, list] of Object.entries(answers || {})) out[id] = { answers: list };
+          reply({ answers: out });
         } else {
           reply({});
         }
@@ -356,12 +386,12 @@ function runCodex(server, { prompt, threadId, fork, cwd, mode, model, effort, co
     if (effort) info.effort = effort;
     server.info.set(tid, info);
     ev.emit('session', tid, info.model, info.effort);
-    const s = SANDBOX[mode] || SANDBOX.ask;
+    const s = SANDBOX[turnMode] || SANDBOX.ask;
     const turnParams = {
       threadId: tid,
-      input: [{ type: 'text', text: prompt, text_elements: [] }],
+      input: userInput((plan ? PLAN_PREFIX : '') + prompt, attachments),
       approvalPolicy: s.approvalPolicy,
-      sandboxPolicy: sandboxPolicy(mode),
+      sandboxPolicy: sandboxPolicy(turnMode),
     };
     if (model) turnParams.model = model;
     if (effort) turnParams.effort = effort;
@@ -369,6 +399,12 @@ function runCodex(server, { prompt, threadId, fork, cwd, mode, model, effort, co
     turnId = t.turn.id;
     if (ev.stopped) server.request('turn/interrupt', { threadId: tid, turnId }).catch(() => {});
   })().catch((err) => finish({ text: '', error: err.message }));
+
+  ev.steer = (text, files) => {
+    if (finished || ev.stopped || !tid || !turnId) return false;
+    server.request('turn/steer', { threadId: tid, expectedTurnId: turnId, input: userInput(text, files) }).catch((err) => ev.emit('warning', 'Не удалось дописать: ' + err.message));
+    return true;
+  };
 
   ev.stop = () => {
     ev.stopped = true;

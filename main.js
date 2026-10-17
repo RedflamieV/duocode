@@ -153,6 +153,16 @@ function cliVersion(cmd) {
   });
 }
 
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+
+function describeFile(p) {
+  let size = 0;
+  try {
+    size = fs.statSync(p).size;
+  } catch {}
+  return { path: p, name: path.basename(p), image: IMAGE_EXT.has(path.extname(p).toLowerCase()), size };
+}
+
 function cliRun(cmd, args) {
   return new Promise((resolve) => {
     const opts = { timeout: 20000, windowsHide: true, shell: isWin && /\.(cmd|bat)$/i.test(cmd) };
@@ -290,7 +300,23 @@ function bindIpc() {
   ipcMain.handle('rooms:remove', (_e, id) => rooms.remove(id));
   ipcMain.handle('rooms:send', (_e, id, payload) => rooms.send(id, payload));
   ipcMain.handle('rooms:stop', (_e, id) => rooms.stop(id));
-  ipcMain.handle('rooms:approve', (_e, id, approvalId, decision) => rooms.respondApproval(id, approvalId, decision));
+  ipcMain.handle('rooms:approve', (_e, id, approvalId, decision, extra) => rooms.respondApproval(id, approvalId, decision, extra));
+  ipcMain.handle('rooms:plan', (_e, id, msgId, action, feedback) => rooms.planAction(id, msgId, action, feedback));
+
+  // Вложения: выбранные файлы берём как есть, вставленные из буфера сохраняем к себе.
+  ipcMain.handle('attach:pick', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] });
+    return res.canceled ? [] : res.filePaths.map(describeFile);
+  });
+  ipcMain.handle('attach:save', (_e, name, bytes) => {
+    const dir = path.join(app.getPath('userData'), 'attachments');
+    fs.mkdirSync(dir, { recursive: true });
+    const safe = (name || 'image.png').replace(/[^\w.\-а-яё ]/gi, '_');
+    const file = path.join(dir, `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safe}`);
+    fs.writeFileSync(file, Buffer.from(bytes));
+    return describeFile(file);
+  });
+  ipcMain.handle('attach:describe', (_e, paths) => paths.filter((p) => fs.existsSync(p)).map(describeFile));
 
   ipcMain.handle('limits:get', () => limits);
   ipcMain.handle('limits:refresh', () => refreshAllLimits().then(() => limits));
@@ -338,7 +364,8 @@ function bindIpc() {
   });
 
   ipcMain.handle('update:install', () => {
-    if (updater) updater.quitAndInstall(false, true);
+    // тихая установка: без окон установщика, приложение само перезапустится
+    if (updater) updater.quitAndInstall(true, true);
   });
   ipcMain.handle('update:check', () => checkForUpdates(true));
   ipcMain.handle('app:version', () => app.getVersion());

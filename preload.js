@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
+const { contextBridge, ipcRenderer, clipboard, webUtils } = require('electron');
 
 const on = (channel) => (cb) => {
   const handler = (_e, ...args) => cb(...args);
@@ -16,7 +16,12 @@ contextBridge.exposeInMainWorld('duo', {
   removeRoom: (id) => ipcRenderer.invoke('rooms:remove', id),
   send: (id, payload) => ipcRenderer.invoke('rooms:send', id, payload),
   stop: (id) => ipcRenderer.invoke('rooms:stop', id),
-  approve: (id, approvalId, decision) => ipcRenderer.invoke('rooms:approve', id, approvalId, decision),
+  approve: (id, approvalId, decision, extra) => ipcRenderer.invoke('rooms:approve', id, approvalId, decision, extra),
+  planAction: (id, msgId, action, feedback) => ipcRenderer.invoke('rooms:plan', id, msgId, action, feedback),
+  pickAttachments: () => ipcRenderer.invoke('attach:pick'),
+  saveAttachment: (name, bytes) => ipcRenderer.invoke('attach:save', name, bytes),
+  describeFiles: (paths) => ipcRenderer.invoke('attach:describe', paths),
+  pathForFile: (file) => webUtils.getPathForFile(file),
 
   limits: () => ipcRenderer.invoke('limits:get'),
   refreshLimits: () => ipcRenderer.invoke('limits:refresh'),

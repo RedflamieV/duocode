@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'preact/hooks';
 import { Icon, Avatar } from './icons.jsx';
 import { renderMarkdown } from './markdown.js';
+import { Attachments } from './attachments.jsx';
 
 export const NAME = { claude: 'Claude', codex: 'Codex' };
 export const peerOf = (a) => (a === 'claude' ? 'codex' : 'claude');
@@ -128,7 +129,165 @@ function Thinking({ part }) {
   );
 }
 
+// Вопрос агента с вариантами ответа (AskUserQuestion у Claude, request_user_input у Codex).
+function Question({ part, roomId, agent }) {
+  const [picked, setPicked] = useState({});
+  const [other, setOther] = useState({});
+  const pending = part.status === 'pending';
+  const toggle = (q, label) => {
+    const cur = picked[q.id] || [];
+    const next = q.multiSelect ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label];
+    setPicked({ ...picked, [q.id]: next });
+    if (!q.multiSelect) setOther({ ...other, [q.id]: '' });
+  };
+  const answers = {};
+  for (const q of part.questions) {
+    const list = [...(picked[q.id] || [])];
+    if ((other[q.id] || '').trim()) {
+      if (q.multiSelect) list.push(other[q.id].trim());
+      else list.splice(0, list.length, other[q.id].trim());
+    }
+    answers[q.id] = list;
+  }
+  const ready = part.questions.every((q) => answers[q.id].length);
+  return (
+    <div class={`question ${part.status}`}>
+      <div class="approval-head">
+        <Icon name="question" size={16} />
+        <b>{NAME[agent]} спрашивает</b>
+      </div>
+      {part.questions.map((q) => (
+        <div class="q" key={q.id}>
+          <div class="q-text">{q.question}</div>
+          {pending ? (
+            <>
+              <div class="q-options">
+                {q.options.map((o) => {
+                  const on = (picked[q.id] || []).includes(o.label);
+                  return (
+                    <button key={o.label} class={`q-option ${on ? 'on' : ''}`} onClick={() => toggle(q, o.label)}>
+                      <span class={q.multiSelect ? 'check' : 'radio'} />
+                      <span>
+                        <b>{o.label}</b>
+                        {o.description && <small>{o.description}</small>}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {q.allowOther !== false && (
+                <input
+                  class="q-other"
+                  placeholder="Свой ответ…"
+                  value={other[q.id] || ''}
+                  onInput={(e) => {
+                    setOther({ ...other, [q.id]: e.target.value });
+                    if (!q.multiSelect && e.target.value) setPicked({ ...picked, [q.id]: [] });
+                  }}
+                />
+              )}
+            </>
+          ) : (
+            <div class="approval-result">{part.answers && part.answers[q.id] ? `Ваш ответ: ${part.answers[q.id].join(', ')}` : 'Вопрос пропущен'}</div>
+          )}
+        </div>
+      ))}
+      {pending && (
+        <div class="approval-actions">
+          <button class="btn primary" disabled={!ready} onClick={() => window.duo.approve(roomId, part.id, 'allow', answers)}>
+            Ответить
+          </button>
+          <button class="btn ghost" onClick={() => window.duo.approve(roomId, part.id, 'deny')}>
+            Пропустить
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// План Claude (ExitPlanMode): утвердить и выполнить или попросить доработать.
+function PlanApproval({ part, roomId }) {
+  const [revise, setRevise] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const pending = part.status === 'pending';
+  return (
+    <div class={`plan-card ${part.status}`}>
+      <div class="approval-head">
+        <Icon name="todo" size={16} />
+        <b>{part.title}</b>
+      </div>
+      <Markdown text={part.plan} class="plan-body" />
+      {pending ? (
+        revise ? (
+          <div class="revise">
+            <textarea rows={3} autoFocus placeholder="Что изменить в плане?" value={feedback} onInput={(e) => setFeedback(e.target.value)} />
+            <div class="approval-actions">
+              <button class="btn primary" disabled={!feedback.trim()} onClick={() => window.duo.approve(roomId, part.id, 'deny', feedback.trim())}>
+                Отправить на доработку
+              </button>
+              <button class="btn ghost" onClick={() => setRevise(false)}>
+                Назад
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div class="approval-actions">
+            <button class="btn primary" onClick={() => window.duo.approve(roomId, part.id, 'allow')}>
+              Выполнить план
+            </button>
+            <button class="btn" onClick={() => setRevise(true)}>
+              Доработать
+            </button>
+          </div>
+        )
+      ) : (
+        <div class="approval-result">
+          {part.status === 'allowed' ? 'План утверждён' : part.feedback ? `Отправлен на доработку: ${part.feedback}` : part.status === 'denied' ? 'План не утверждён' : 'Запрос устарел'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// План Codex: он уже в тексте ответа, здесь только кнопки.
+function PlanReady({ part, roomId, msgId, agent }) {
+  const [revise, setRevise] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  if (part.status !== 'pending') {
+    return <div class="plan-ready done">{part.status === 'approved' ? 'План утверждён и отправлен на выполнение' : 'План отправлен на доработку'}</div>;
+  }
+  return (
+    <div class="plan-ready">
+      {revise ? (
+        <div class="revise">
+          <textarea rows={3} autoFocus placeholder="Что изменить в плане?" value={feedback} onInput={(e) => setFeedback(e.target.value)} />
+          <div class="approval-actions">
+            <button class="btn primary" disabled={!feedback.trim()} onClick={() => window.duo.planAction(roomId, msgId, 'revise', feedback.trim())}>
+              Отправить на доработку
+            </button>
+            <button class="btn ghost" onClick={() => setRevise(false)}>
+              Назад
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div class="approval-actions">
+          <button class="btn primary" onClick={() => window.duo.planAction(roomId, msgId, 'run')}>
+            Выполнить план
+          </button>
+          <button class="btn" onClick={() => setRevise(true)}>
+            Доработать
+          </button>
+          <span class="muted small">{NAME[agent]} ничего не менял, только предложил план</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Approval({ part, roomId, agent }) {
+  if (part.kind === 'approval' && part.plan !== undefined) return <PlanApproval part={part} roomId={roomId} />;
   const decide = (d) => window.duo.approve(roomId, part.id, d);
   const pending = part.status === 'pending';
   return (
@@ -199,6 +358,18 @@ function Parts({ msg, room, byId }) {
         return <ToolPart key={p.id} part={p} cwd={room.cwd} />;
       case 'approval':
         return <Approval key={p.id} part={p} roomId={room.id} agent={msg.agent} />;
+      case 'question':
+        return <Question key={p.id} part={p} roomId={room.id} agent={msg.agent} />;
+      case 'planReady':
+        return <PlanReady key={p.id} part={p} roomId={room.id} msgId={msg.id} agent={msg.agent} />;
+      case 'steer':
+        return (
+          <div class="steer" key={p.id}>
+            <span class="steer-label">Вы дописали</span>
+            <div class="bubble">{p.text}</div>
+            <Attachments items={p.attachments || []} />
+          </div>
+        );
       case 'delegate':
         return <Delegate key={p.id} part={p} from={msg.agent} room={room} byId={byId} />;
       default:
@@ -232,6 +403,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
         <Avatar agent={msg.agent} size={nested ? 20 : 24} />
         <span class="msg-name">{NAME[msg.agent]}</span>
         {msg.requestedBy && !nested && <span class="badge">по запросу {NAME[msg.requestedBy]}</span>}
+        {msg.plan && <span class="badge">план</span>}
         {msg.fork && <span class="badge" title="Агент был занят, поэтому запрос выполнен в ответвлении его сессии">параллельно</span>}
         <ModelTag msg={msg} />
         {running && <span class="working">работает…</span>}
@@ -280,9 +452,11 @@ export function UserMessage({ msg }) {
         {msg.targets.map((t) => (
           <i class={`dot ${t}`} key={t} />
         ))}
+        {msg.plan && <span class="queued plan-tag">· сначала план</span>}
         {msg.queued && msg.queued.length > 0 && <span class="queued">· в очереди у {msg.queued.map((a) => NAME[a]).join(' и ')}</span>}
       </div>
       <div class="bubble">{msg.text}</div>
+      {msg.attachments && msg.attachments.length > 0 && <Attachments items={msg.attachments} />}
     </div>
   );
 }

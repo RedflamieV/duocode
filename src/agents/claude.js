@@ -1,10 +1,37 @@
 // Один ход Claude Code: `claude -p --output-format stream-json`, промпт идёт через stdin.
 // Сырые события CLI превращаются в «части» сообщения, которые рисует интерфейс.
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const { spawnTool } = require('../env');
 const { clip, simpleDiff, killTree } = require('./util');
 
-const HIDDEN_TOOLS = new Set(['ToolSearch']);
+// Эти вызовы DuoCode показывает своими карточками (вопрос, план) или не показывает вовсе.
+const HIDDEN_TOOLS = new Set(['ToolSearch', 'AskUserQuestion', 'ExitPlanMode']);
+const isPlanFile = (input) => /[\\/]\.claude[\\/]plans[\\/]/.test((input && input.file_path) || '');
+
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+
+// Сообщение пользователя в формате stream-json: текст, картинки и пути к остальным файлам.
+function userContent(text, attachments = []) {
+  const content = [];
+  const files = [];
+  for (const a of attachments) {
+    const type = IMAGE_TYPES[path.extname(a.path).toLowerCase()];
+    if (type) {
+      try {
+        content.push({ type: 'image', source: { type: 'base64', media_type: type, data: fs.readFileSync(a.path).toString('base64') } });
+        continue;
+      } catch {
+        // не прочитали — передадим путём
+      }
+    }
+    files.push(a);
+  }
+  const list = files.length ? `\n\nПриложенные файлы:\n${files.map((f) => `- ${f.path}`).join('\n')}` : '';
+  content.unshift({ type: 'text', text: text + list });
+  return content;
+}
 
 function toolPart(id, name, input = {}) {
   const base = { id, kind: 'tool', name, status: 'running' };
@@ -63,13 +90,16 @@ function resultText(content) {
  *  session(id)           — id сессии Claude Code
  *  ratelimit(info)       — свежие данные о лимитах из CLI
  *  done({ text, error, cost, usage })
+ * ev.steer(text, attachments) дописывает сообщение в идущую работу; false — если процесс уже закрывается.
  */
-function runClaude({ command, prompt, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, env }) {
+function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, env }) {
   const ev = new EventEmitter();
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   args.push('--mcp-config', mcpConfigPath, '--append-system-prompt-file', systemPromptPath);
   args.push('--allowedTools', 'mcp__duo__ask_codex');
-  if (mode === 'full') args.push('--permission-mode', 'bypassPermissions');
+  // в режиме плана Claude сам вызывает ExitPlanMode, а DuoCode показывает план на утверждение
+  if (plan) args.push('--permission-mode', 'plan', '--permission-prompt-tool', 'mcp__duo__approve');
+  else if (mode === 'full') args.push('--permission-mode', 'bypassPermissions');
   else {
     if (mode === 'edits') args.push('--permission-mode', 'acceptEdits');
     args.push('--permission-prompt-tool', 'mcp__duo__approve');
@@ -101,6 +131,16 @@ function runClaude({ command, prompt, cwd, sessionId, fork, mode, model, effort,
   let stderr = '';
   let lastText = '';
   let n = 0;
+  let result = null;
+  let cost = 0;
+  let closeTimer = null;
+  let inputOpen = true;
+  const closeInput = () => {
+    if (!inputOpen) return;
+    inputOpen = false;
+    proc.stdin.end();
+  };
+  const write = (content) => proc.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n');
 
   const emitPart = (p) => {
     parts.set(p.id, p);
@@ -141,7 +181,7 @@ function runClaude({ command, prompt, cwd, sessionId, fork, mode, model, effort,
           } else if (block.type === 'thinking' && block.thinking) {
             emitPart({ id: `r${n++}`, kind: 'thinking', text: block.thinking });
           } else if (block.type === 'tool_use') {
-            if (HIDDEN_TOOLS.has(block.name) || block.name.startsWith('mcp__duo__')) continue;
+            if (HIDDEN_TOOLS.has(block.name) || block.name.startsWith('mcp__duo__') || isPlanFile(block.input)) continue;
             emitPart(toolPart(block.id, block.name, block.input));
           }
         }
@@ -168,13 +208,17 @@ function runClaude({ command, prompt, cwd, sessionId, fork, mode, model, effort,
         ev.emit('ratelimit', e.rate_limit_info);
         break;
       case 'result':
-        finish({
+        // дописанные сообщения могут дать ещё один ход в том же процессе, поэтому ждём закрытия
+        cost += e.total_cost_usd || 0;
+        result = {
           text: e.result || lastText,
           error: e.is_error ? e.result || 'Claude завершился с ошибкой' : null,
-          cost: e.total_cost_usd,
+          cost,
           usage: e.usage,
           sessionId: e.session_id,
-        });
+        };
+        clearTimeout(closeTimer);
+        closeTimer = setTimeout(closeInput, 1500);
         break;
       default:
         break;
@@ -203,11 +247,21 @@ function runClaude({ command, prompt, cwd, sessionId, fork, mode, model, effort,
   });
   proc.on('error', (err) => finish({ text: '', error: err.message }));
   proc.on('close', (code) => {
-    if (ev.stopped) finish({ text: lastText, error: null, stopped: true });
+    clearTimeout(closeTimer);
+    if (ev.stopped) finish({ text: lastText, error: null, stopped: true, cost });
+    else if (result) finish(result);
     else finish({ text: lastText, error: code ? stderr.trim() || `Claude завершился с кодом ${code}` : null });
   });
+  proc.stdin.on('error', () => {});
 
-  proc.stdin.end(prompt);
+  write(userContent(prompt, attachments));
+
+  ev.steer = (text, files) => {
+    if (!inputOpen || finished || ev.stopped) return false;
+    clearTimeout(closeTimer);
+    write(userContent(text, files));
+    return true;
+  };
 
   ev.stop = () => {
     ev.stopped = true;
