@@ -1544,7 +1544,7 @@ function App() {
       if (Date.now() - last < 5000) return;
       last = Date.now();
       duo.checkEnv().then(setEnv);
-      duo.refreshLimits().then(setLimits);
+      duo.limits().then(setLimits);
     };
     window.addEventListener('focus', onFocus);
     const offs = [

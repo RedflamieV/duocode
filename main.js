@@ -236,10 +236,10 @@ function pickAgent() {
   return { agent, reason: `Авто → ${agent === 'claude' ? 'Claude' : 'Codex'}: у Claude ${fmt(c)}, у Codex ${fmt(x)}` };
 }
 
-async function refreshClaudeLimits() {
-  const res = await getClaudeLimits().catch((err) => ({ ok: false, error: err.message }));
-  // если API недоступен, но Claude Code уже присылал лимиты — оставляем их
-  if (!res.ok && limits.claude && limits.claude.ok && limits.claude.source === 'cli') return;
+async function refreshClaudeLimits(force = false) {
+  const res = await getClaudeLimits({ force }).catch((err) => ({ ok: false, error: err.message }));
+  // если API сейчас недоступен, но лимиты уже были (из API или из потока Claude Code) — оставляем их
+  if (!res.ok && limits.claude && limits.claude.ok) return;
   limits.claude = res;
   sendLimits();
 }
@@ -258,9 +258,9 @@ function refreshToday() {
   sendLimits();
 }
 
-async function refreshAllLimits() {
+async function refreshAllLimits(force = false) {
   refreshToday();
-  await Promise.all([refreshClaudeLimits(), refreshCodexLimits()]);
+  await Promise.all([refreshClaudeLimits(force), refreshCodexLimits()]);
 }
 
 // Claude Code сообщает лимиты прямо в потоке событий — обновляем без запроса к API.
@@ -703,7 +703,7 @@ function bindIpc() {
   ipcMain.handle('attach:describe', (_e, paths) => paths.filter((p) => fs.existsSync(p)).map(describeFile));
 
   ipcMain.handle('limits:get', () => limits);
-  ipcMain.handle('limits:refresh', () => refreshAllLimits().then(() => limits));
+  ipcMain.handle('limits:refresh', () => refreshAllLimits(true).then(() => limits));
   ipcMain.handle('history:get', () => allSessions().slice(0, 60));
 
   ipcMain.handle('codex:models', async () => {
@@ -880,7 +880,7 @@ app.whenReady().then(async () => {
   setupTelegram();
   setupRemote();
   ipcMain.handle('update:get', () => update);
-  setInterval(refreshClaudeLimits, Math.max(1, settings.refreshMinutes) * 60 * 1000);
+  setInterval(() => refreshClaudeLimits(), Math.max(3, settings.refreshMinutes) * 60 * 1000);
   setInterval(refreshCodexLimits, Math.max(1, settings.refreshMinutes) * 60 * 1000);
   setInterval(refreshToday, 2 * 60 * 1000);
 

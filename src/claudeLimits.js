@@ -71,7 +71,37 @@ function parseUsage(json) {
   return { windows, extra };
 }
 
-async function getClaudeLimits() {
+// Эндпоинт лимитов отвечает 429, если спрашивать часто. Поэтому: не чаще раза в 2 минуты,
+// после 429 — пауза (Retry-After или 10 минут), а в паузе отдаём последние полученные данные.
+const MIN_INTERVAL = 2 * 60 * 1000;
+const cache = { data: null, at: 0, blockedUntil: 0 };
+
+function fromCache(note) {
+  if (cache.data) return { ...cache.data, note, stale: true };
+  return null;
+}
+
+async function getClaudeLimits({ force = false } = {}) {
+  const now = Date.now();
+  if (now < cache.blockedUntil) {
+    const mins = Math.ceil((cache.blockedUntil - now) / 60000);
+    return fromCache(`обновятся через ${mins} мин`) || { ok: false, error: `Anthropic временно ограничил запросы лимитов, повторю через ${mins} мин.` };
+  }
+  if (cache.data && now - cache.at < (force ? 30000 : MIN_INTERVAL)) return cache.data;
+  const result = await fetchClaudeLimits();
+  if (result.rateLimited) {
+    cache.blockedUntil = Date.now() + result.retryAfter * 1000;
+    const mins = Math.ceil(result.retryAfter / 60);
+    return fromCache(`обновятся через ${mins} мин`) || { ok: false, error: `Anthropic временно ограничил запросы лимитов, повторю через ${mins} мин.` };
+  }
+  if (result.ok) {
+    cache.data = result;
+    cache.at = Date.now();
+  }
+  return result;
+}
+
+async function fetchClaudeLimits() {
   const creds = readCredentials();
   const oauth = creds && creds.claudeAiOauth;
   if (!oauth || !oauth.accessToken) {
@@ -97,6 +127,10 @@ async function getClaudeLimits() {
   }
   if (res.status === 401 || res.status === 403) {
     return { ok: false, plan, error: 'Токен Claude недействителен — откройте вкладку Claude, он обновится сам.' };
+  }
+  if (res.status === 429) {
+    const retry = Number(res.headers.get('retry-after'));
+    return { ok: false, plan, rateLimited: true, retryAfter: retry > 0 ? Math.min(retry, 3600) : 600 };
   }
   if (!res.ok) return { ok: false, plan, error: `Claude API ответил ${res.status}` };
   const json = await res.json();
