@@ -1,0 +1,72 @@
+{
+  "name": "duocode",
+  "productName": "DuoCode",
+  "version": "2.0.0",
+  "description": "Claude Code и Codex в одном приложении: общий чат, взаимные вызовы агентов и оба лимита",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "build": "esbuild renderer/src/app.jsx --bundle --minify --outfile=renderer/dist/app.js --jsx=automatic --jsx-import-source=preact --target=chrome120",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "devDependencies": {
+    "dompurify": "^3.4.17",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.12",
+    "highlight.js": "^11.12.0",
+    "marked": "^15.0.12",
+    "preact": "^10.29.8"
+  },
+  "build": {
+    "appId": "local.duocode",
+    "productName": "DuoCode",
+    "npmRebuild": false,
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**",
+      "bridge/**",
+      "renderer/index.html",
+      "renderer/styles.css",
+      "renderer/dist/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "bridge/**"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "DuoCode-Setup-${version}.exe"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "DuoCode"
+    },
+    "publish": null
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}
