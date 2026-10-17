@@ -16,6 +16,7 @@ const gitx = require('./src/git');
 const { searchFiles } = require('./src/files');
 const memory = require('./src/memory');
 const { Telegram, esc, clip } = require('./src/telegram');
+const { RemoteServer, Tunnel } = require('./src/remote');
 
 fixPath();
 
@@ -35,7 +36,7 @@ const APPEARANCE = {
   sendKey: 'enter',
   showCost: true,
 };
-const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true };
+const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true, remote: false };
 const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true };
 
 const PIPELINES = [
@@ -155,6 +156,9 @@ let rooms;
 let codex;
 let tray = null;
 const tg = new Telegram();
+let remote = null;
+let tunnel = null;
+let remoteStatus = { state: 'off' };
 const limits = { claude: null, codex: null, today: null };
 
 function windowMinutes(label) {
@@ -218,6 +222,7 @@ function sendLimits() {
   limitAlerts('claude', limits.claude);
   limitAlerts('codex', limits.codex);
   if (win && !win.isDestroyed()) win.webContents.send('limits', limits);
+  if (remote) remote.broadcast('limits', limits);
 }
 
 // «Авто»: задачу берёт агент, у которого больше свободного лимита.
@@ -529,6 +534,53 @@ function telegramFinished(room, msg) {
   tg.send(`${icon} <b>${who}</b> · ${esc(room.title)}\n\n${esc(clip(text, 1500))}\n\n<i>Ответьте на это сообщение, чтобы написать в чат.</i>`, { roomId: room.id });
 }
 
+// ---------- Мини-приложение Telegram ----------
+
+function setupRemote() {
+  const inProjects = (cwd) => settings.projects.includes(cwd);
+  remote = new RemoteServer({
+    root: path.join(__dirname, 'renderer'),
+    getAuth: () => ({ token: settings.telegram.token, userId: settings.telegram.userId }),
+    api: {
+      listRooms: () => rooms.list(),
+      getRoom: (id) => rooms.get(id),
+      // новые чаты — только в проектах, которые вы уже открывали в DuoCode на компьютере
+      createRoom: ({ cwd }) => (inProjects(cwd) ? rooms.create({ cwd }) : Promise.reject(new Error('Неизвестный проект'))),
+      setRoomSettings: (id, patch) => rooms.updateSettings(id, patch),
+      send: (id, payload) => rooms.send(id, payload),
+      stop: (id) => rooms.stop(id),
+      approve: (id, approvalId, decision, extra) => rooms.respondApproval(id, approvalId, decision, extra),
+      planAction: (id, msgId, action, feedback) => rooms.planAction(id, msgId, action, feedback),
+      revert: (id, msgId, redo) => rooms.revert(id, msgId, redo),
+      checkpointDiff: (id, msgId, file) => rooms.checkpointDiff(id, msgId, file),
+      duelApply: (id, duelId, choice) => rooms.applyDuel(id, duelId, choice),
+      limits: () => limits,
+      projects: () => settings.projects,
+    },
+  });
+  tunnel = new Tunnel(path.join(app.getPath('userData'), 'bin'));
+  tunnel.on('status', (s) => {
+    remoteStatus = s;
+    if (win && !win.isDestroyed()) win.webContents.send('remote', s);
+    if (s.state === 'ready') tg.setApp(s.url);
+    else if (s.state === 'off') tg.setApp(null);
+  });
+  rooms.on('messages', (roomId, msgs) => remote.broadcast('messages', { roomId, msgs }));
+  rooms.on('rooms', (list) => remote.broadcast('rooms', list));
+  applyRemote();
+}
+
+async function applyRemote() {
+  if (!remote) return;
+  const t = settings.telegram;
+  if (t.remote && t.token && t.userId) {
+    const port = await remote.start();
+    tunnel.start(port);
+  } else {
+    tunnel.stop();
+  }
+}
+
 // ---------- Окно ----------
 
 // Цвета фона тем — для окна и системных кнопок в заголовке (сами темы описаны в styles.css).
@@ -742,6 +794,7 @@ function bindIpc() {
   // Telegram
   ipcMain.handle('telegram:status', () => ({ status: tg.status, bot: tg.bot, chatId: tg.chatId }));
   ipcMain.handle('telegram:test', () => tg.send('👋 Тестовое сообщение от DuoCode. Уведомления работают.'));
+  ipcMain.handle('remote:status', () => remoteStatus);
 
   ipcMain.handle('settings:get', () => settings);
   ipcMain.handle('settings:set', (_e, patch) => {
@@ -758,6 +811,7 @@ function bindIpc() {
       if (patch.telegram.userId !== undefined) delete settings.telegram.suggestedId;
       saveSettings();
       tg.configure(settings.telegram);
+      applyRemote();
     }
     if (patch.general) applyGeneral();
     if (patch.appearance) {
@@ -824,6 +878,7 @@ app.whenReady().then(async () => {
   setupTray();
   applyGeneral();
   setupTelegram();
+  setupRemote();
   ipcMain.handle('update:get', () => update);
   setInterval(refreshClaudeLimits, Math.max(1, settings.refreshMinutes) * 60 * 1000);
   setInterval(refreshCodexLimits, Math.max(1, settings.refreshMinutes) * 60 * 1000);
@@ -841,6 +896,7 @@ app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.on('before-quit', () => {
   app.isQuitting = true;
+  if (tunnel) tunnel.stop();
   if (rooms) rooms.shutdown();
   if (codex) codex.stop();
 });

@@ -16,6 +16,7 @@ class Telegram extends EventEmitter {
     this.loopId = 0;
     this.bot = null;
     this.rooms = new Map(); // message_id -> roomId (для ответов на сообщения бота)
+    this.appUrl = null; // адрес мини-приложения, когда туннель поднят
     this.status = 'off';
   }
 
@@ -110,6 +111,11 @@ class Telegram extends EventEmitter {
         return;
       }
       if (!this.isOwner(m.from, m.chat)) return this.stranger(m.from, m.chat, `сообщение «${clip(m.text || '(не текст)', 80)}»`);
+      if (/^\/app/.test(m.text || '')) {
+        if (this.appUrl) await this.sendApp('📱 Управление DuoCode на компьютере:');
+        else await this.api('sendMessage', { chat_id: this.userId, text: 'Мини-приложение выключено. Включите его в DuoCode → Настройки → Telegram.' });
+        return;
+      }
       if (/^\/start/.test(m.text || '')) {
         await this.api('sendMessage', { chat_id: this.userId, text: '✅ DuoCode подключён. Сюда будут приходить уведомления и запросы подтверждений. Чтобы написать агентам, ответьте (Reply) на сообщение нужного чата.' });
         return;
@@ -135,6 +141,24 @@ class Telegram extends EventEmitter {
     }
   }
 
+  // Кнопка «DuoCode» слева от поля ввода в чате с ботом открывает мини-приложение.
+  async setApp(url) {
+    this.appUrl = url || null;
+    if (!this.token || !this.userId) return;
+    const menu = url ? { type: 'web_app', text: 'DuoCode', web_app: { url } } : { type: 'default' };
+    await this.api('setChatMenuButton', { chat_id: Number(this.userId), menu_button: menu }).catch(() => {});
+    await this.api('setMyCommands', { commands: [{ command: 'app', description: 'Открыть DuoCode' }], scope: { type: 'chat', chat_id: Number(this.userId) } }).catch(() => {});
+  }
+
+  appButton(roomId) {
+    if (!this.appUrl) return null;
+    return { text: '📱 Открыть чат', web_app: { url: roomId ? `${this.appUrl}/?room=${encodeURIComponent(roomId)}` : this.appUrl } };
+  }
+
+  sendApp(text) {
+    return this.api('sendMessage', { chat_id: this.userId, text, reply_markup: { inline_keyboard: [[{ text: '📱 Открыть DuoCode', web_app: { url: this.appUrl } }]] } }).catch(() => {});
+  }
+
   async send(html, { roomId, buttons } = {}) {
     if (!this.token || !this.userId) return null;
     try {
@@ -143,7 +167,12 @@ class Telegram extends EventEmitter {
         text: clip(html, 4000),
         parse_mode: 'HTML',
         disable_web_page_preview: true,
-        reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
+        reply_markup: (() => {
+          const rows = buttons ? [...buttons] : [];
+          const app = this.appButton(roomId);
+          if (app) rows.push([app]);
+          return rows.length ? { inline_keyboard: rows } : undefined;
+        })(),
       });
       if (roomId) {
         this.rooms.set(msg.message_id, roomId);

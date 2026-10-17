@@ -1227,6 +1227,18 @@ function TelegramTab({ settings, onSaved }) {
   const [token, setToken] = useState(t.token || '');
   const [userId, setUserId] = useState(t.userId || t.suggestedId || '');
   const idOk = /^\d{4,15}$/.test(userId);
+  const [remote, setRemote] = useState({ state: 'off' });
+  useEffect(() => {
+    duo.remoteStatus().then(setRemote);
+    return duo.onRemote(setRemote);
+  }, []);
+  const REMOTE = {
+    off: 'Выключено',
+    downloading: `Скачиваю туннель Cloudflare${remote.progress ? ` — ${remote.progress}%` : '…'}`,
+    starting: 'Поднимаю туннель…',
+    ready: 'Работает. В чате с ботом появилась кнопка «DuoCode» (или отправьте боту /app).',
+    error: `Ошибка: ${remote.error}`,
+  };
   const [status, setStatus] = useState(null);
   useEffect(() => {
     duo.telegramStatus().then(setStatus);
@@ -1291,6 +1303,23 @@ function TelegramTab({ settings, onSaved }) {
           {t.suggestedId && !t.userId && <span class="warn"> Подставлен чат, привязанный раньше, — проверьте, что это ваш ID, и сохраните.</span>}
           {t.token && !t.userId && !t.suggestedId && <span class="warn"> Пока ID не указан, бот никого не слушается.</span>}
         </div>
+      </div>
+      <div class="remote-box">
+        <Switch
+          checked={!!t.remote}
+          onChange={(v) => save({ remote: v })}
+          label="Мини-приложение: управление DuoCode с телефона"
+          hint="Полноценный интерфейс прямо в Telegram: чаты, задачи агентам, подтверждения, лимиты"
+        />
+        {t.remote && (
+          <div class={`field-hint ${remote.state === 'error' ? 'warn' : ''}`}>
+            {!t.userId ? <span class="warn">Сначала укажите свой Telegram ID.</span> : REMOTE[remote.state] || remote.state}
+          </div>
+        )}
+        <p class="field-hint">
+          Телефон связывается с компьютером через бесплатный зашифрованный туннель Cloudflare (DuoCode скачает его сам, ~40 МБ). Адрес туннеля случайный и меняется при каждом запуске, а
+          каждый запрос проверяется по подписи Telegram и вашему ID — без них данные не отдаются. Компьютер с DuoCode должен быть включён.
+        </p>
       </div>
       <Switch checked={t.notifyFinish !== false} onChange={(v) => save({ notifyFinish: v })} label="Агент закончил работу" hint="С кратким ответом. Ответьте на сообщение, чтобы продолжить чат" />
       <Switch checked={t.notifyApprovals !== false} onChange={(v) => save({ notifyApprovals: v })} label="Подтверждения, планы и вопросы" hint="С кнопками «Разрешить», «Отклонить» и вариантами ответа" />

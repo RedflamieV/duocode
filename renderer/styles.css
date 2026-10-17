@@ -1316,3 +1316,7 @@ code.tool-sub { font-size: 12px; }
 .stats-table td:not(:first-child), .stats-table th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .stats-table tr.clickable { cursor: pointer; }
 .stats-table tr.clickable:hover td { background: var(--hover); }
+
+.remote-box { margin: 6px 0 4px; padding: 0 12px 4px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--panel-2); }
+.remote-box .switch-row { border-top: 0; }
+.remote-box .field-hint { margin-top: 0; }
