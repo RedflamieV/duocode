@@ -1,10 +1,13 @@
 # Сборка установщика для Windows и публикация релиза.
-# Запускается при пуше тега вида v2.1.0; DuoCode находит релиз и обновляется сам.
+# Запускается, когда в main меняется версия в package.json (или вручную).
+# Если релиз этой версии уже есть, ничего не делает. DuoCode находит релиз и обновляется сам.
 name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: ['package.json']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,12 +17,28 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Проверить, нужен ли релиз
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Релиз v$VERSION уже опубликован"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip != 'true'
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx electron-builder --win --x64 --publish always
+      - if: steps.check.outputs.skip != 'true'
+        run: npm ci
+      - if: steps.check.outputs.skip != 'true'
+        run: npm run build
+      - if: steps.check.outputs.skip != 'true'
+        run: npx electron-builder --win --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
