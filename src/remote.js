@@ -101,10 +101,19 @@ class RemoteServer extends EventEmitter {
 
     if (req.method === 'GET' && url.pathname === '/api/events') {
       if (!this.auth(url.searchParams.get('auth'))) return this.json(res, 401, { error: 'Нет доступа' });
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-      res.write('retry: 3000\n\n');
+      // no-transform запрещает Cloudflare и прокси сжимать поток (а значит, копить его в буфере),
+      // а 2 КБ пробелов в начале «проталкивают» буферы, которые ждут первых килобайт
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, no-transform',
+        'Content-Encoding': 'identity',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.write(`:${' '.repeat(2048)}\nretry: 3000\n\nevent: hello\ndata: {}\n\n`);
       this.clients.add(res);
-      const ping = setInterval(() => res.write(': ping\n\n'), 20000);
+      // именованный ping, чтобы приложение видело, что поток жив
+      const ping = setInterval(() => res.write(`event: ping\ndata: ${Date.now()}\n\n`), 10000);
       req.on('close', () => {
         clearInterval(ping);
         this.clients.delete(res);

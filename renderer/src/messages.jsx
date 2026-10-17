@@ -636,7 +636,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
 export function UserMessage({ msg }) {
   const both = msg.targets.length > 1;
   return (
-    <div class="msg user">
+    <div class={`msg user ${msg.local ? 'local' : ''}`}>
       <div class="user-to">
         {both ? 'Claude и Codex' : NAME[msg.targets[0]]}
         {msg.targets.map((t) => (

@@ -170,7 +170,7 @@ function NewChat({ onCreated }) {
 
 // ---------- Чат ----------
 
-function Composer({ room }) {
+function Composer({ room, onLocal }) {
   const [text, setText] = useState('');
   const [target, setTarget] = useState(() => {
     try {
@@ -204,7 +204,15 @@ function Composer({ room }) {
     const payload = { text: text.trim(), targets: agents, plan };
     setText('');
     setPlan(false);
-    await duo.send(room.id, payload);
+    // показываем сообщение сразу, настоящее придёт с компьютера и заменит его
+    if (!steering) onLocal({ id: `local-${Date.now()}`, role: 'user', text: payload.text, targets: agents.filter((a) => a !== 'auto'), plan, ts: Date.now(), queued: [], local: true });
+    try {
+      await duo.send(room.id, payload);
+    } catch (err) {
+      if (tg) tg.showAlert(`Не отправилось: ${err.message}`);
+      else alert(`Не отправилось: ${err.message}`);
+      setText(payload.text);
+    }
   };
 
   return (
@@ -242,7 +250,7 @@ function Composer({ room }) {
   );
 }
 
-function Room({ room }) {
+function Room({ room, onLocal }) {
   const byId = useMemo(() => new Map(room.messages.map((m) => [m.id, m])), [room.messages]);
   const top = room.messages.filter((m) => !m.parentId);
   const scroll = useRef();
@@ -303,7 +311,7 @@ function Room({ room }) {
           )}
         </div>
       </div>
-      <Composer room={room} />
+      <Composer room={room} onLocal={onLocal} />
     </div>
   );
 }
@@ -348,7 +356,7 @@ function App() {
         if (roomId !== current.current) return;
         setRoom((r) => {
           if (!r || r.id !== roomId) return r;
-          const messages = r.messages.slice();
+          const messages = msgs.some((m) => m.role === 'user') ? r.messages.filter((m) => !m.local) : r.messages.slice();
           for (const m of msgs) {
             const i = messages.findIndex((x) => x.id === m.id);
             if (i >= 0) messages[i] = m;
@@ -361,6 +369,34 @@ function App() {
       duo.onStatus(setStatus),
     ];
     return () => offs.forEach((o) => o());
+  }, []);
+
+  // Свежее состояние после каждого действия, опрос — если поток обновлений молчит,
+  // и переподключение, когда приложение снова на экране.
+  const sync = async () => {
+    const id = current.current;
+    const [list, r] = await Promise.all([duo.listRooms(), id ? duo.getRoom(id) : null]).catch(() => [null, null]);
+    if (list) setRooms(list);
+    if (r && current.current === r.id) setRoom(r);
+  };
+  useEffect(() => {
+    const off = duo.onChanged(() => {
+      sync();
+      setTimeout(sync, 1500);
+    });
+    const poll = setInterval(() => !duo.live() && sync(), 3000);
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      duo.connect();
+      sync();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    if (tg) tg.onEvent('activated', onVisible);
+    return () => {
+      off();
+      clearInterval(poll);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // кнопка «Назад» в шапке Telegram
@@ -392,7 +428,7 @@ function App() {
         {status === 'offline' && <div class="m-offline">Нет связи с компьютером — переподключаюсь…</div>}
         {screen === 'home' && <Home rooms={rooms} limits={limits} onOpen={openRoom} onNew={() => setScreen('new')} />}
         {screen === 'new' && <NewChat onCreated={openRoom} />}
-        {screen === 'room' && room && <Room room={room} key={room.id} />}
+        {screen === 'room' && room && <Room room={room} key={room.id} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
       </div>
     </PrefsContext.Provider>
   );
