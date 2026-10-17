@@ -16,7 +16,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Проверить, нужен ли релиз
         id: check
         shell: bash
@@ -29,7 +29,7 @@ jobs:
             echo "Релиз v$VERSION уже опубликован"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.check.outputs.skip != 'true'
         with:
           node-version: 22
@@ -39,6 +39,20 @@ jobs:
       - if: steps.check.outputs.skip != 'true'
         run: npm run build
       - if: steps.check.outputs.skip != 'true'
-        run: npx electron-builder --win --x64 --publish always
+        run: npx electron-builder --win --x64 --publish never
+      # latest.yml и .blockmap нужны автообновлению: по ним приложение находит и докачивает версию
+      - name: Опубликовать релиз
+        if: steps.check.outputs.skip != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          ls -la dist
+          gh release create "v$VERSION" \
+            "dist/DuoCode-Setup-$VERSION.exe" \
+            "dist/DuoCode-Setup-$VERSION.exe.blockmap" \
+            dist/latest.yml \
+            --target "$GITHUB_SHA" \
+            --title "DuoCode $VERSION" \
+            --notes "Установщик для Windows. Уже установленный DuoCode обновится сам."
