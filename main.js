@@ -35,7 +35,7 @@ const APPEARANCE = {
   sendKey: 'enter',
   showCost: true,
 };
-const TELEGRAM = { token: '', chatId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true };
+const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true };
 const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true };
 
 const PIPELINES = [
@@ -90,6 +90,10 @@ function loadSettings() {
       telegram: { ...TELEGRAM, ...(saved.telegram || {}) },
       general: { ...GENERAL, ...(saved.general || {}) },
     };
+    // 2.4.0 привязывал первый чат, написавший /start. Теперь нужен явный ID владельца:
+    // старый чат только подставляем в поле как подсказку, но не доверяем ему сами.
+    if (settings.telegram.chatId && !settings.telegram.userId) settings.telegram.suggestedId = settings.telegram.chatId;
+    delete settings.telegram.chatId;
   } catch {
     settings = { ...defaults };
   }
@@ -463,9 +467,8 @@ function applyGeneral() {
 // ---------- Telegram ----------
 
 function setupTelegram() {
-  tg.on('linked', (chatId) => {
-    settings.telegram.chatId = chatId;
-    saveSettings();
+  tg.on('intrusion', ({ who, id, what }) => {
+    if (Notification.isSupported()) new Notification({ title: 'DuoCode: чужой аккаунт написал вашему боту', body: `${who} (ID ${id}): ${what}. Проигнорировано.` }).show();
   });
   tg.on('status', (s) => win && !win.isDestroyed() && win.webContents.send('telegram', s));
   tg.on('approval', ({ roomId, partId, value }) => rooms.respondApproval(roomId, partId, value));
@@ -752,7 +755,8 @@ function bindIpc() {
     };
     saveSettings();
     if (patch.telegram) {
-      if (patch.telegram.token !== undefined && patch.telegram.token !== tg.token) settings.telegram.chatId = '';
+      if (patch.telegram.userId !== undefined) delete settings.telegram.suggestedId;
+      saveSettings();
       tg.configure(settings.telegram);
     }
     if (patch.general) applyGeneral();

@@ -1,5 +1,7 @@
 // Telegram-бот: уведомления, подтверждения и ответы на вопросы агентов с телефона.
-// Работает через long polling (getUpdates), сервер не нужен. Принимает сообщения только из привязанного чата.
+// Работает через long polling (getUpdates), сервер не нужен.
+// Безопасность: бот слушается только одного аккаунта — по Telegram ID из настроек, и только в личном чате.
+// Всё остальное игнорируется, а о попытках чужих аккаунтов DuoCode сообщает владельцу.
 const { EventEmitter } = require('events');
 
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -9,7 +11,7 @@ class Telegram extends EventEmitter {
   constructor() {
     super();
     this.token = null;
-    this.chatId = null;
+    this.userId = null; // единственный аккаунт, которому бот подчиняется (в личке chat.id совпадает с ним)
     this.offset = 0;
     this.loopId = 0;
     this.bot = null;
@@ -17,11 +19,16 @@ class Telegram extends EventEmitter {
     this.status = 'off';
   }
 
-  configure({ token, chatId }) {
-    const changed = token !== this.token;
+  configure({ token, userId }) {
+    const id = /^\d{4,15}$/.test(String(userId || '').trim()) ? String(userId).trim() : null;
+    const changed = token !== this.token || id !== this.userId;
     this.token = token || null;
-    this.chatId = chatId || null;
+    this.userId = id;
     if (changed) this.restart();
+  }
+
+  get chatId() {
+    return this.userId;
   }
 
   async api(method, params = {}) {
@@ -48,7 +55,7 @@ class Telegram extends EventEmitter {
     try {
       const me = await this.api('getMe');
       this.bot = me.username;
-      this.setStatus(this.chatId ? 'linked' : 'waiting');
+      this.setStatus(this.userId ? 'linked' : 'needId');
     } catch (err) {
       return this.setStatus('error', err.message);
     }
@@ -63,25 +70,50 @@ class Telegram extends EventEmitter {
         if (id !== this.loopId) return;
         this.setStatus('error', err.message);
         await new Promise((r) => setTimeout(r, 15000));
-        if (id === this.loopId) this.setStatus(this.chatId ? 'linked' : 'waiting');
+        if (id === this.loopId) this.setStatus(this.userId ? 'linked' : 'needId');
       }
+    }
+  }
+
+  // Сообщение или нажатие кнопки от владельца: его ID и только личный чат с ботом.
+  isOwner(from, chat) {
+    return !!this.userId && from && String(from.id) === this.userId && chat && chat.type === 'private' && String(chat.id) === this.userId;
+  }
+
+  async stranger(from, chat, what) {
+    if (!chat) return;
+    if (chat.type !== 'private') {
+      // ботом пытаются пользоваться в группе — уходим оттуда
+      await this.api('leaveChat', { chat_id: chat.id }).catch(() => {});
+    }
+    const who = from ? `${from.first_name || ''} ${from.last_name || ''}`.trim() + (from.username ? ` (@${from.username})` : '') : 'неизвестный';
+    this.emit('intrusion', { id: from && from.id, who, what });
+    if (this.userId) {
+      await this.api('sendMessage', {
+        chat_id: this.userId,
+        text: `⚠️ Чужой аккаунт пытался управлять ботом и был проигнорирован.\nКто: ${who}, ID ${from ? from.id : '?'}\nЧто: ${what}`,
+      }).catch(() => {});
     }
   }
 
   async handle(u) {
     if (u.message) {
       const m = u.message;
-      const chat = String(m.chat.id);
-      if (!this.chatId) {
-        if (/^\/start/.test(m.text || '')) {
-          this.chatId = chat;
-          this.emit('linked', chat);
-          this.setStatus('linked');
-          await this.api('sendMessage', { chat_id: chat, text: '✅ DuoCode подключён. Сюда будут приходить уведомления и запросы подтверждений. Чтобы написать агентам, ответьте (Reply) на сообщение нужного чата.' });
+      if (!this.userId) {
+        // ID ещё не задан: подсказываем владельцу его ID и больше ничего не делаем
+        if (m.chat.type === 'private' && /^\/start/.test(m.text || '')) {
+          await this.api('sendMessage', {
+            chat_id: m.chat.id,
+            text: `Ваш Telegram ID: ${m.from.id}\n\nВпишите его в DuoCode → Настройки → Telegram → «Ваш Telegram ID». Пока ID не указан, бот никого не слушается.`,
+          });
         }
         return;
       }
-      if (chat !== this.chatId) return;
+      if (!this.isOwner(m.from, m.chat)) return this.stranger(m.from, m.chat, `сообщение «${clip(m.text || '(не текст)', 80)}»`);
+      if (/^\/start/.test(m.text || '')) {
+        await this.api('sendMessage', { chat_id: this.userId, text: '✅ DuoCode подключён. Сюда будут приходить уведомления и запросы подтверждений. Чтобы написать агентам, ответьте (Reply) на сообщение нужного чата.' });
+        return;
+      }
       const reply = m.reply_to_message && this.rooms.get(m.reply_to_message.message_id);
       if (reply && m.text) this.emit('reply', { roomId: reply, text: m.text });
       else if (m.text && !/^\/start/.test(m.text)) {
@@ -91,20 +123,23 @@ class Telegram extends EventEmitter {
     }
     if (u.callback_query) {
       const q = u.callback_query;
-      if (String(q.message.chat.id) !== this.chatId) return;
+      if (!q.message || !this.isOwner(q.from, q.message.chat)) {
+        await this.api('answerCallbackQuery', { callback_query_id: q.id, text: 'Нет доступа' }).catch(() => {});
+        return this.stranger(q.from, q.message && q.message.chat, 'нажатие кнопки');
+      }
       const [kind, roomId, partId, value] = (q.data || '').split('|');
       this.emit(kind === 'a' ? 'approval' : 'answer', { roomId, partId, value });
       await this.api('answerCallbackQuery', { callback_query_id: q.id, text: 'Готово' }).catch(() => {});
       const label = kind === 'a' ? (value === 'deny' ? '❌ Отклонено' : '✅ Разрешено') : `✅ Ответ: ${value}`;
-      await this.api('editMessageReplyMarkup', { chat_id: this.chatId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'x' }]] } }).catch(() => {});
+      await this.api('editMessageReplyMarkup', { chat_id: this.userId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'x' }]] } }).catch(() => {});
     }
   }
 
   async send(html, { roomId, buttons } = {}) {
-    if (!this.token || !this.chatId) return null;
+    if (!this.token || !this.userId) return null;
     try {
       const msg = await this.api('sendMessage', {
-        chat_id: this.chatId,
+        chat_id: this.userId,
         text: clip(html, 4000),
         parse_mode: 'HTML',
         disable_web_page_preview: true,
@@ -116,7 +151,8 @@ class Telegram extends EventEmitter {
       }
       return msg;
     } catch (err) {
-      this.emit('status', { status: 'error', error: err.message, bot: this.bot, chatId: this.chatId });
+      const hint = /chat not found|bot can't initiate|blocked/i.test(err.message) ? 'Откройте своего бота в Telegram и нажмите «Старт».' : err.message;
+      this.emit('status', { status: 'error', error: hint, bot: this.bot, chatId: this.userId });
       return null;
     }
   }

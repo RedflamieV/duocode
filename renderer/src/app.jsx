@@ -1225,6 +1225,8 @@ function AgentsTab({ settings, env, onSaved }) {
 function TelegramTab({ settings, onSaved }) {
   const t = settings.telegram || {};
   const [token, setToken] = useState(t.token || '');
+  const [userId, setUserId] = useState(t.userId || t.suggestedId || '');
+  const idOk = /^\d{4,15}$/.test(userId);
   const [status, setStatus] = useState(null);
   useEffect(() => {
     duo.telegramStatus().then(setStatus);
@@ -1245,7 +1247,7 @@ function TelegramTab({ settings, onSaved }) {
           В Telegram откройте <b>@BotFather</b>, отправьте <code>/newbot</code> и придумайте имя — он пришлёт токен.
         </li>
         <li>Вставьте токен сюда и нажмите «Подключить».</li>
-        <li>Откройте своего бота и нажмите «Старт» (или отправьте /start) — DuoCode запомнит ваш чат.</li>
+        <li>Откройте своего бота и нажмите «Старт» — он ответит вашим Telegram ID. Впишите его ниже и сохраните.</li>
       </ol>
       <div class="field">
         <label>Токен бота</label>
@@ -1255,16 +1257,16 @@ function TelegramTab({ settings, onSaved }) {
             Подключить
           </button>
           {t.token && (
-            <button class="btn small ghost" onClick={() => { setToken(''); save({ token: '', chatId: '' }); }}>
+            <button class="btn small ghost" onClick={() => { setToken(''); save({ token: '' }); }}>
               Отключить
             </button>
           )}
         </div>
         <div class="field-hint">
           {!t.token && 'Не подключено.'}
-          {t.token && st === 'waiting' && (
+          {t.token && st === 'needId' && (
             <span class="warn">
-              Бот @{status.bot} найден. Отправьте ему /start в Telegram.
+              Бот @{status.bot} найден. Нажмите у него «Старт» — он пришлёт ваш ID — и впишите его ниже.
             </span>
           )}
           {t.token && st === 'linked' && <span>Подключено{status.bot ? ` к @${status.bot}` : ''}. </span>}
@@ -1274,6 +1276,20 @@ function TelegramTab({ settings, onSaved }) {
               Отправить тестовое сообщение
             </button>
           )}
+        </div>
+      </div>
+      <div class="field">
+        <label>Ваш Telegram ID</label>
+        <div class="field-row">
+          <input value={userId} placeholder="например, 123456789" inputMode="numeric" onInput={(e) => setUserId(e.target.value.replace(/\D/g, ''))} spellcheck={false} />
+          <button class="btn small primary" disabled={!idOk || userId === (t.userId || '')} onClick={() => save({ userId })}>
+            Сохранить
+          </button>
+        </div>
+        <div class="field-hint">
+          Бот подчиняется только этому аккаунту и только в личном чате. Сообщения и кнопки от любых других аккаунтов игнорируются, а вам приходит предупреждение.
+          {t.suggestedId && !t.userId && <span class="warn"> Подставлен чат, привязанный раньше, — проверьте, что это ваш ID, и сохраните.</span>}
+          {t.token && !t.userId && !t.suggestedId && <span class="warn"> Пока ID не указан, бот никого не слушается.</span>}
         </div>
       </div>
       <Switch checked={t.notifyFinish !== false} onChange={(v) => save({ notifyFinish: v })} label="Агент закончил работу" hint="С кратким ответом. Ответьте на сообщение, чтобы продолжить чат" />
