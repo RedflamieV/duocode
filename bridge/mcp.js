@@ -31,6 +31,18 @@ const tools = [
   },
 ];
 
+tools.push({
+  name: 'remember',
+  description:
+    'Save a short durable note to the shared project memory that both agents (Claude and Codex) see in every chat of this project: ' +
+    'conventions, architecture decisions, useful commands, gotchas, user preferences. Not for temporary state.',
+  inputSchema: {
+    type: 'object',
+    properties: { note: { type: 'string', description: 'One short fact or decision, in the user language.' } },
+    required: ['note'],
+  },
+});
+
 if (AGENT === 'claude') {
   tools.push({
     name: 'approve',

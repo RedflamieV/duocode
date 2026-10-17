@@ -1,17 +1,21 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, nativeTheme, Tray, Menu, nativeImage, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
-const { fixPath, resolveCommand, isWin } = require('./src/env');
+const { fixPath, resolveCommand, isWin, spawnTool } = require('./src/env');
 const { Store } = require('./src/store');
 const { Rooms } = require('./src/rooms');
 const { CodexServer } = require('./src/agents/codex');
 const { getClaudeLimits } = require('./src/claudeLimits');
 const { getCodexLimits, parseRateLimits } = require('./src/codexLimits');
-const { allSessions, claudeToday, codexToday } = require('./src/history');
+const { allSessions, claudeToday, codexToday, dailyUsage } = require('./src/history');
 const { listCommands } = require('./src/commands');
+const gitx = require('./src/git');
+const { searchFiles } = require('./src/files');
+const memory = require('./src/memory');
+const { Telegram, esc, clip } = require('./src/telegram');
 
 fixPath();
 
@@ -31,13 +35,61 @@ const APPEARANCE = {
   sendKey: 'enter',
   showCost: true,
 };
-const defaults = { projects: [], claudeCommand: 'claude', codexCommand: 'codex', refreshMinutes: 3, appearance: APPEARANCE };
+const TELEGRAM = { token: '', chatId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true };
+const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true };
+
+const PIPELINES = [
+  {
+    id: 'plan-code-review',
+    name: 'План → код → ревью',
+    steps: [
+      { agent: 'claude', prompt: 'Составь подробный пошаговый план решения задачи. Ничего не меняй в файлах — только план.\n\nЗадача: {task}' },
+      { agent: 'codex', prompt: 'Реализуй план Claude из общего чата. Задача: {task}' },
+      { agent: 'claude', prompt: 'Проверь, как Codex реализовал план: найди ошибки и недочёты и исправь критичные сам. В конце кратко перечисли, что исправил.' },
+    ],
+  },
+  {
+    id: 'code-review-fix',
+    name: 'Код → ревью → исправления',
+    steps: [
+      { agent: 'codex', prompt: '{task}' },
+      { agent: 'claude', prompt: 'Сделай код-ревью изменений, которые только что внёс Codex. Ничего не меняй сам — перечисли замечания по важности.' },
+      { agent: 'codex', prompt: 'Исправь замечания Claude из его ревью.' },
+    ],
+  },
+  {
+    id: 'two-opinions',
+    name: 'Два мнения → решение',
+    steps: [
+      { agent: 'claude', prompt: 'Предложи решение задачи, ничего не меняя в файлах: подход, плюсы и минусы.\n\nЗадача: {task}' },
+      { agent: 'codex', prompt: 'Предложи своё решение той же задачи, ничего не меняя в файлах, и честно сравни его с вариантом Claude.\n\nЗадача: {task}' },
+      { agent: 'claude', prompt: 'Сравни оба варианта, выбери лучший (или объедини) и реализуй его.' },
+    ],
+  },
+];
+
+const defaults = {
+  projects: [],
+  claudeCommand: 'claude',
+  codexCommand: 'codex',
+  refreshMinutes: 3,
+  appearance: APPEARANCE,
+  telegram: TELEGRAM,
+  general: GENERAL,
+  pipelines: PIPELINES,
+};
 let settings = { ...defaults };
 
 function loadSettings() {
   try {
     const saved = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
-    settings = { ...defaults, ...saved, appearance: { ...APPEARANCE, ...(saved.appearance || {}) } };
+    settings = {
+      ...defaults,
+      ...saved,
+      appearance: { ...APPEARANCE, ...(saved.appearance || {}) },
+      telegram: { ...TELEGRAM, ...(saved.telegram || {}) },
+      general: { ...GENERAL, ...(saved.general || {}) },
+    };
   } catch {
     settings = { ...defaults };
   }
@@ -97,10 +149,82 @@ function startBridge(rooms) {
 let win;
 let rooms;
 let codex;
+let tray = null;
+const tg = new Telegram();
 const limits = { claude: null, codex: null, today: null };
 
+function windowMinutes(label) {
+  const h = /(\d+)\s*ч/.exec(label);
+  if (h) return Number(h[1]) * 60;
+  const d = /(\d+)\s*д/.exec(label);
+  if (d) return Number(d[1]) * 1440;
+  return /Неделя/.test(label) ? 10080 : null;
+}
+
+// Прогноз: если расходовать так же, как с начала окна, когда лимит кончится (только если раньше сброса).
+function addForecast(data) {
+  if (!data || !data.ok) return;
+  const now = Date.now();
+  for (const w of data.windows) {
+    w.runsOutAt = null;
+    const mins = windowMinutes(w.label);
+    const reset = Date.parse(w.resetsAt);
+    if (!mins || !reset || w.percent < 3 || w.percent >= 100) continue;
+    const len = mins * 60000;
+    const elapsed = len - (reset - now);
+    if (elapsed < len * 0.05 || elapsed <= 0) continue;
+    const eta = now + ((100 - w.percent) * elapsed) / w.percent;
+    if (eta < reset) w.runsOutAt = new Date(eta).toISOString();
+  }
+}
+
+const alertState = new Map();
+
+function limitAlerts(agent, data) {
+  if (!data || !data.ok) return;
+  const name = agent === 'claude' ? 'Claude' : 'Codex';
+  for (const w of data.windows) {
+    const key = `${agent}:${w.label}`;
+    const st = alertState.get(key) || { level: 0, resetsAt: w.resetsAt, pct: w.percent, eta: false };
+    const fresh = !alertState.has(key);
+    if (w.resetsAt && st.resetsAt && Date.parse(w.resetsAt) - Date.parse(st.resetsAt) > 60000) {
+      if (!fresh && st.pct >= 50) limitNotify(`Лимит ${name} обновился`, `«${w.label}» снова доступен: ${Math.round(w.percent)}%.`);
+      Object.assign(st, { level: 0, eta: false, resetsAt: w.resetsAt });
+    }
+    const level = w.percent >= 95 ? 2 : w.percent >= 80 ? 1 : 0;
+    if (level > st.level && !fresh) limitNotify(`Лимит ${name}: ${Math.round(w.percent)}%`, `«${w.label}» почти исчерпан. Сброс ${new Date(w.resetsAt).toLocaleString()}.`);
+    if (w.runsOutAt && !st.eta && !fresh && level === 0) {
+      limitNotify(`${name}: лимит может кончиться раньше сброса`, `При таком темпе «${w.label}» закончится около ${new Date(w.runsOutAt).toLocaleString()}.`);
+      st.eta = true;
+    }
+    st.level = Math.max(st.level, level);
+    st.pct = w.percent;
+    alertState.set(key, st);
+  }
+}
+
+function limitNotify(title, body) {
+  if (settings.general.notifyLimits && Notification.isSupported()) new Notification({ title, body }).show();
+  if (settings.telegram.notifyLimits) tg.send(`⚠️ <b>${esc(title)}</b>\n${esc(body)}`);
+}
+
 function sendLimits() {
+  addForecast(limits.claude);
+  addForecast(limits.codex);
+  limitAlerts('claude', limits.claude);
+  limitAlerts('codex', limits.codex);
   if (win && !win.isDestroyed()) win.webContents.send('limits', limits);
+}
+
+// «Авто»: задачу берёт агент, у которого больше свободного лимита.
+function pickAgent() {
+  const load = (data) => (data && data.ok && data.windows.length ? Math.max(...data.windows.slice(0, 2).map((w) => w.percent)) : 50);
+  const installed = (cmd) => !!resolveCommand(cmd);
+  const c = installed(settings.claudeCommand) ? load(limits.claude) : 999;
+  const x = installed(settings.codexCommand) ? load(limits.codex) : 999;
+  const agent = x < c ? 'codex' : 'claude';
+  const fmt = (v) => (v >= 999 ? 'не установлен' : `занято ${Math.round(v)}%`);
+  return { agent, reason: `Авто → ${agent === 'claude' ? 'Claude' : 'Codex'}: у Claude ${fmt(c)}, у Codex ${fmt(x)}` };
 }
 
 async function refreshClaudeLimits() {
@@ -241,6 +365,167 @@ function checkForUpdates(manual = false) {
   return update;
 }
 
+// ---------- Сообщение коммита, статистика чатов ----------
+
+function commitMessage(cwd) {
+  return new Promise(async (resolve) => {
+    const st = await gitx.status(cwd);
+    const files = (st.files || []).map((f) => `${f.kind}: ${f.path}`).join('\n');
+    const diff = (await gitx.git(['diff', 'HEAD'], { cwd })).stdout.slice(0, 15000);
+    const fallback = `Обновление: ${st.files ? st.files.length : 0} файл(ов)`;
+    let proc;
+    try {
+      proc = spawnTool(settings.claudeCommand, ['-p', '--model', 'haiku', '--output-format', 'text', '--tools', ''], { cwd, stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch {
+      return resolve(fallback);
+    }
+    let out = '';
+    const timer = setTimeout(() => proc.kill(), 60000);
+    proc.stdout.on('data', (c) => (out += c));
+    proc.on('close', () => {
+      clearTimeout(timer);
+      resolve(out.trim().replace(/^```\w*\n?|```$/g, '').trim() || fallback);
+    });
+    proc.on('error', () => resolve(fallback));
+    proc.stdin.end(
+      'Напиши сообщение git-коммита для этих изменений: первая строка до 72 символов в повелительном наклонении, ' +
+        'при необходимости пустая строка и краткий список. Язык — как в истории проекта, по умолчанию русский. ' +
+        `Ответь только текстом сообщения.\n\nФайлы:\n${files}\n\nDiff:\n${diff}`,
+    );
+  });
+}
+
+function chatStats() {
+  return rooms.list().map((r) => {
+    const room = rooms.get(r.id);
+    const s = { id: r.id, title: r.title, cwd: r.cwd, updatedAt: r.updatedAt, claude: 0, codex: 0, cost: 0 };
+    for (const m of room.messages) {
+      if (m.role !== 'agent') continue;
+      s[m.agent]++;
+      s.cost += m.cost || 0;
+    }
+    return s;
+  });
+}
+
+// ---------- Трей и горячая клавиша ----------
+
+function showWindow() {
+  if (!win || win.isDestroyed()) createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function setupTray() {
+  if (tray) return;
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', process.platform === 'win32' ? 'tray.png' : 'tray16.png'));
+  tray = new Tray(icon);
+  tray.setToolTip('DuoCode');
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Открыть DuoCode', click: showWindow },
+      {
+        label: 'Новый чат',
+        click: () => {
+          showWindow();
+          win.webContents.send('new-chat');
+        },
+      },
+      { type: 'separator' },
+      {
+        label: 'Выход',
+        click: () => {
+          app.isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  tray.on('click', showWindow);
+}
+
+const HOTKEY = 'CommandOrControl+Shift+Space';
+
+function applyGeneral() {
+  globalShortcut.unregister(HOTKEY);
+  if (settings.general.hotkey) {
+    globalShortcut.register(HOTKEY, () => {
+      if (win && win.isVisible() && win.isFocused()) win.hide();
+      else {
+        showWindow();
+        win.webContents.send('focus-composer');
+      }
+    });
+  }
+}
+
+// ---------- Telegram ----------
+
+function setupTelegram() {
+  tg.on('linked', (chatId) => {
+    settings.telegram.chatId = chatId;
+    saveSettings();
+  });
+  tg.on('status', (s) => win && !win.isDestroyed() && win.webContents.send('telegram', s));
+  tg.on('approval', ({ roomId, partId, value }) => rooms.respondApproval(roomId, partId, value));
+  tg.on('answer', ({ roomId, partId, value }) => {
+    const room = rooms.get(roomId);
+    for (const m of (room && room.messages) || []) {
+      const part = (m.parts || []).find((p) => p.id === partId);
+      if (part && part.questions && part.questions[0]) {
+        const q = part.questions[0];
+        const opt = q.options[Number(value)];
+        if (opt) rooms.respondApproval(roomId, partId, 'allow', { [q.id]: [opt.label] });
+      }
+    }
+  });
+  tg.on('reply', ({ roomId, text }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const lastUser = [...room.messages].reverse().find((m) => m.role === 'user');
+    rooms.send(roomId, { text, targets: lastUser ? lastUser.targets : ['claude', 'codex'] });
+  });
+  tg.configure(settings.telegram);
+}
+
+function telegramAttention(room, msg, part) {
+  if (!settings.telegram.notifyApprovals) return;
+  const who = msg.agent === 'claude' ? 'Claude' : 'Codex';
+  const head = `<b>${esc(room.title)}</b> · ${who}\n`;
+  if (part.kind === 'question') {
+    const q = part.questions[0];
+    const single = part.questions.length === 1 && !q.multiSelect && q.options.length;
+    const text = `${head}❓ ${esc(q.question)}${single ? '' : '\n\n<i>Ответьте в приложении.</i>'}`;
+    const buttons = single ? q.options.map((o, i) => [{ text: o.label.slice(0, 60), callback_data: `q|${room.id}|${part.id}|${i}` }]) : null;
+    return tg.send(text, { roomId: room.id, buttons });
+  }
+  const isPlan = part.plan !== undefined;
+  let body = esc(part.title);
+  if (part.command) body += `\n<pre>${esc(clip(part.command, 1500))}</pre>`;
+  else if (part.plan) body += `\n\n${esc(clip(part.plan, 2500))}`;
+  else if (part.subtitle) body += `\n<code>${esc(clip(part.subtitle, 500))}</code>`;
+  const cb = (d) => `a|${room.id}|${part.id}|${d}`;
+  const buttons = isPlan
+    ? [[{ text: '✅ Выполнить план', callback_data: cb('allow') }, { text: '❌ Отклонить', callback_data: cb('deny') }]]
+    : [
+        [
+          { text: '✅ Разрешить', callback_data: cb('allow') },
+          { text: '♾ Всегда', callback_data: cb('allowSession') },
+        ],
+        [{ text: '❌ Отклонить', callback_data: cb('deny') }],
+      ];
+  tg.send(`${head}🛡 ${body}`, { roomId: room.id, buttons });
+}
+
+function telegramFinished(room, msg) {
+  if (!settings.telegram.notifyFinish || msg.parentId || msg.duelId) return;
+  const who = msg.agent === 'claude' ? 'Claude' : 'Codex';
+  const icon = msg.status === 'error' ? '⚠️' : msg.status === 'stopped' ? '⏹' : '✅';
+  const text = msg.error ? `Ошибка: ${msg.error}` : msg.finalText || '';
+  tg.send(`${icon} <b>${who}</b> · ${esc(room.title)}\n\n${esc(clip(text, 1500))}\n\n<i>Ответьте на это сообщение, чтобы написать в чат.</i>`, { roomId: room.id });
+}
+
 // ---------- Окно ----------
 
 // Цвета фона тем — для окна и системных кнопок в заголовке (сами темы описаны в styles.css).
@@ -283,6 +568,7 @@ function createWindow() {
     title: 'DuoCode',
     backgroundColor: currentTheme().color,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     ...overlay,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -300,6 +586,12 @@ function createWindow() {
     if (url !== win.webContents.getURL()) {
       e.preventDefault();
       if (/^https?:/.test(url)) shell.openExternal(url);
+    }
+  });
+  win.on('close', (e) => {
+    if (settings.general.closeToTray && !app.isQuitting) {
+      e.preventDefault();
+      win.hide();
     }
   });
   nativeTheme.on('updated', () => {
@@ -408,12 +700,62 @@ function bindIpc() {
   ipcMain.handle('app:version', () => app.getVersion());
 
   ipcMain.handle('commands:list', (_e, cwd) => listCommands(cwd));
+  ipcMain.handle('files:search', (_e, cwd, q) => searchFiles(cwd, q));
+
+  // откат правок и дуэль
+  ipcMain.handle('rooms:revert', (_e, id, msgId, redo) => rooms.revert(id, msgId, redo));
+  ipcMain.handle('rooms:checkpointDiff', (_e, id, msgId, file) => rooms.checkpointDiff(id, msgId, file));
+  ipcMain.handle('rooms:duelApply', (_e, id, duelId, choice) => rooms.applyDuel(id, duelId, choice));
+  ipcMain.handle('rooms:search', (_e, q) => rooms.search(q));
+  ipcMain.handle('rooms:export', async (_e, id) => {
+    const room = rooms.get(id);
+    if (!room) return false;
+    const res = await dialog.showSaveDialog(win, {
+      defaultPath: `${room.title.replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60)}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    });
+    if (res.canceled || !res.filePath) return false;
+    fs.writeFileSync(res.filePath, rooms.exportMarkdown(id));
+    shell.showItemInFolder(res.filePath);
+    return true;
+  });
+
+  // панель Git
+  ipcMain.handle('git:status', (_e, cwd) => gitx.status(cwd));
+  ipcMain.handle('git:diff', (_e, cwd, file, kind) => gitx.fileDiff(cwd, file, kind));
+  ipcMain.handle('git:revert', (_e, cwd, file, kind) => gitx.revertFile(cwd, file, kind));
+  ipcMain.handle('git:commit', (_e, cwd, message) => gitx.commitAll(cwd, message));
+  ipcMain.handle('git:push', (_e, cwd) => gitx.push(cwd));
+  ipcMain.handle('git:init', (_e, cwd) => gitx.init(cwd));
+  ipcMain.handle('git:message', (_e, cwd) => commitMessage(cwd));
+
+  // общая память проекта
+  ipcMain.handle('memory:get', (_e, cwd) => ({ text: memory.read(cwd), file: memory.file(cwd) }));
+  ipcMain.handle('memory:set', (_e, cwd, text) => memory.write(cwd, text));
+
+  // статистика
+  ipcMain.handle('stats:get', async () => ({ daily: await dailyUsage(14), chats: chatStats() }));
+
+  // Telegram
+  ipcMain.handle('telegram:status', () => ({ status: tg.status, bot: tg.bot, chatId: tg.chatId }));
+  ipcMain.handle('telegram:test', () => tg.send('👋 Тестовое сообщение от DuoCode. Уведомления работают.'));
 
   ipcMain.handle('settings:get', () => settings);
   ipcMain.handle('settings:set', (_e, patch) => {
     const restartCodex = patch.codexCommand && patch.codexCommand !== settings.codexCommand;
-    settings = { ...settings, ...patch, appearance: { ...settings.appearance, ...(patch.appearance || {}) } };
+    settings = {
+      ...settings,
+      ...patch,
+      appearance: { ...settings.appearance, ...(patch.appearance || {}) },
+      telegram: { ...settings.telegram, ...(patch.telegram || {}) },
+      general: { ...settings.general, ...(patch.general || {}) },
+    };
     saveSettings();
+    if (patch.telegram) {
+      if (patch.telegram.token !== undefined && patch.telegram.token !== tg.token) settings.telegram.chatId = '';
+      tg.configure(settings.telegram);
+    }
+    if (patch.general) applyGeneral();
     if (patch.appearance) {
       applyTheme();
       if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
@@ -447,15 +789,23 @@ app.whenReady().then(async () => {
     bridge,
     codex,
     getSettings: () => settings,
+    checkpoints: new gitx.Checkpoints(path.join(userData, 'checkpoints')),
+    worktreeDir: path.join(userData, 'worktrees'),
+    pickAgent,
   });
 
   rooms.on('messages', (roomId, msgs) => win && !win.isDestroyed() && win.webContents.send('messages', roomId, msgs));
   rooms.on('rooms', (list) => win && !win.isDestroyed() && win.webContents.send('rooms', list));
   rooms.on('claude-ratelimit', onClaudeRateLimit);
-  rooms.on('attention', (room, msg, part) => notify(`${room.title}: нужно подтверждение`, part.title, room.id));
+  rooms.on('attention', (room, msg, part) => {
+    notify(`${room.title}: ${part.kind === 'question' ? 'вопрос агента' : 'нужно подтверждение'}`, part.title || (part.questions && part.questions[0] && part.questions[0].question) || '', room.id);
+    telegramAttention(room, msg, part);
+  });
+  rooms.on('memory', (cwd) => win && !win.isDestroyed() && win.webContents.send('memory', cwd));
   rooms.on('finished', (room, msg) => {
     if (msg.parentId) return;
     notify(`${msg.agent === 'claude' ? 'Claude' : 'Codex'} закончил`, room.title, room.id);
+    telegramFinished(room, msg);
     refreshToday();
   });
   codex.on('ratelimits', onCodexRateLimit);
@@ -467,6 +817,9 @@ app.whenReady().then(async () => {
 
   refreshAllLimits();
   setupUpdater();
+  setupTray();
+  applyGeneral();
+  setupTelegram();
   ipcMain.handle('update:get', () => update);
   setInterval(refreshClaudeLimits, Math.max(1, settings.refreshMinutes) * 60 * 1000);
   setInterval(refreshCodexLimits, Math.max(1, settings.refreshMinutes) * 60 * 1000);
@@ -480,7 +833,10 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on('will-quit', () => globalShortcut.unregisterAll());
+
 app.on('before-quit', () => {
+  app.isQuitting = true;
   if (rooms) rooms.shutdown();
   if (codex) codex.stop();
 });

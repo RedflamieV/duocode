@@ -3,7 +3,8 @@ import { useState, useEffect, useRef, useMemo, useCallback, useContext } from 'p
 import { PrefsContext, DEFAULT_PREFS, applyPrefs } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { Attachments } from './attachments.jsx';
-import { AgentMessage, UserMessage, SystemMessage, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
+import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
+import { SidePanel, StatsModal } from './panels.jsx';
 
 const duo = window.duo;
 const baseName = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '');
@@ -39,7 +40,10 @@ const TARGETS = [
   { id: 'claude', name: 'Claude', agents: ['claude'] },
   { id: 'codex', name: 'Codex', agents: ['codex'] },
   { id: 'both', name: 'Оба', agents: ['claude', 'codex'] },
+  { id: 'auto', name: 'Авто', agents: ['auto'] },
 ];
+
+const IMG = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
 function store(key, value) {
   try {
@@ -118,7 +122,15 @@ function LimitBlock({ agent, data, today, auth }) {
             <div class="bar">
               <i class={pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : ''} style={{ width: pct + '%' }} />
             </div>
-            <div class="limit-reset">{fmtUntil(w.resetsAt)}</div>
+            <div class="limit-reset">
+              {fmtUntil(w.resetsAt)}
+              {w.runsOutAt && (
+                <span class="runs-out" title="Если расходовать так же, как с начала окна, лимит закончится раньше сброса">
+                  {' · кончится ~'}
+                  {new Date(w.runsOutAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+            </div>
           </div>
         );
       })}
@@ -168,8 +180,14 @@ function UpdateBanner({ update }) {
   );
 }
 
-function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, refreshing, onSettings, env, update }) {
+function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
   const [q, setQ] = useState('');
+  const [found, setFound] = useState([]);
+  useEffect(() => {
+    if (q.trim().length < 2) return setFound([]);
+    const t = setTimeout(() => duo.searchRooms(q).then(setFound), 200);
+    return () => clearTimeout(t);
+  }, [q]);
   const groups = useMemo(() => {
     const filtered = rooms.filter((r) => !q || r.title.toLowerCase().includes(q.toLowerCase()) || (r.cwd || '').toLowerCase().includes(q.toLowerCase()));
     const map = new Map();
@@ -196,7 +214,23 @@ function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, ref
       </button>
       <input class="search" type="search" placeholder="Поиск чатов" value={q} onInput={(e) => setQ(e.target.value)} />
       <nav class="rooms">
-        {groups.length === 0 && <div class="rooms-empty">{rooms.length ? 'Ничего не найдено' : 'Чатов пока нет'}</div>}
+        {groups.length === 0 && !found.length && <div class="rooms-empty">{rooms.length ? 'Ничего не найдено' : 'Чатов пока нет'}</div>}
+        {found.length > 0 && (
+          <div class="group">
+            <div class="group-title">
+              <Icon name="search" size={13} />
+              В сообщениях
+            </div>
+            {found.slice(0, 20).map((f, i) => (
+              <button key={i} class="found" onClick={() => onOpen(f.roomId, f.msgId)}>
+                <span class="found-room">
+                  {f.roomTitle} · {f.who}
+                </span>
+                <span class="found-snippet">{f.snippet}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {groups.map(([cwd, list]) => (
           <div class="group" key={cwd}>
             <div class="group-title" title={cwd}>
@@ -219,10 +253,16 @@ function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, ref
       </nav>
       <Limits limits={limits} onRefresh={onRefreshLimits} refreshing={refreshing} env={env} />
       <UpdateBanner update={update} />
-      <button class="settings-btn" onClick={onSettings}>
-        <Icon name="settings" size={15} />
-        Настройки
-      </button>
+      <div class="sidebar-foot">
+        <button class="settings-btn" onClick={onSettings}>
+          <Icon name="settings" size={15} />
+          Настройки
+        </button>
+        <button class="settings-btn" onClick={onStats}>
+          <Icon name="chart" size={15} />
+          Статистика
+        </button>
+      </div>
     </aside>
   );
 }
@@ -264,7 +304,27 @@ function CommandMenu({ items, active, agents, onPick }) {
   );
 }
 
-function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [] }) {
+// @файл: поиск по файлам проекта.
+function FileMenu({ items, active, onPick }) {
+  return (
+    <div class="cmd-menu">
+      {items.length === 0 && <div class="cmd-item dim">Ничего не найдено</div>}
+      {items.map((f, i) => (
+        <button key={f.path} class={`cmd-item ${i === active ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); onPick(f); }}>
+          <Icon name="read" size={13} />
+          <span class="cmd-desc file-path">{f.path}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [], cwd = null, pipelines = [], focusTick = 0 }) {
+  const [duel, setDuel] = useState(false);
+  const [pipeline, setPipeline] = useState(null);
+  const [pipeMenu, setPipeMenu] = useState(false);
+  const [fileItems, setFileItems] = useState([]);
+  const [fileIndex, setFileIndex] = useState(0);
   const prefs = useContext(PrefsContext);
   const [text, setText] = useState('');
   const [cmdIndex, setCmdIndex] = useState(0);
@@ -276,7 +336,7 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
 
   useEffect(() => {
     if (autoFocus && ref.current) ref.current.focus();
-  }, [autoFocus]);
+  }, [autoFocus, focusTick]);
 
   useEffect(() => {
     const ta = ref.current;
@@ -290,6 +350,29 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
   const agents = TARGETS.find((t) => t.id === effective).agents;
   const steering = !plan && agents.some((a) => busy.includes(a));
   const canSend = mention.text.trim() || files.length;
+
+  // @запрос перед курсором (кроме @claude/@codex в самом начале)
+  const caret = ref.current ? ref.current.selectionStart : text.length;
+  const atMatch = /(^|\s)@([^\s@]*)$/.exec(text.slice(0, caret));
+  const atQuery = atMatch && !(atMatch.index === 0 && /^(c|cl|cla|clau|claud|claude|co|cod|code|codex|о|об|оба|к|кл|ко|both)$/i.test(atMatch[2])) ? atMatch[2] : null;
+  useEffect(() => {
+    if (atQuery === null || !cwd) return setFileItems([]);
+    let alive = true;
+    const t = setTimeout(() => duo.searchFiles(cwd, atQuery).then((r) => alive && setFileItems(r.slice(0, 12))), 80);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [atQuery, cwd]);
+  const showFiles = atQuery !== null && !!cwd;
+  const pickFile = (f) => {
+    const before = text.slice(0, caret).replace(/@([^\s@]*)$/, '');
+    setText(before + text.slice(caret));
+    const full = cwd.replace(/[\\/]+$/, '') + '/' + f.path;
+    addFiles([{ path: full, name: f.path, image: IMG.test(f.path), size: 0 }]);
+    setFileIndex(0);
+    if (ref.current) ref.current.focus();
+  };
 
   const cmdQuery = /^\/([\w:.-]*)$/.exec(mention.text.trimStart());
   const cmdItems = cmdQuery && !cmdHidden ? commands.filter((c) => c.name.toLowerCase().includes(cmdQuery[1].toLowerCase())).slice(0, 12) : [];
@@ -323,13 +406,23 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
 
   const submit = () => {
     if (!canSend) return;
-    onSend(mention.text, agents, { attachments: files, plan });
+    const opts = { attachments: files, plan };
+    if (pipeline) opts.pipeline = pipeline;
+    else if (duel && effective === 'both') opts.duel = true;
+    onSend(mention.text, agents, opts);
     setText('');
     setFiles([]);
     setPlan(false);
+    setPipeline(null);
   };
 
-  const hint = steering
+  const hint = pipeline
+    ? `Сценарий «${pipeline.name}»: напишите задачу`
+    : duel && effective === 'both'
+      ? 'Оба решают в своих копиях проекта — потом выберете лучший вариант'
+      : effective === 'auto'
+        ? 'Задачу возьмёт агент, у которого больше свободного лимита'
+        : steering
     ? `${agents.filter((a) => busy.includes(a)).map((a) => NAME[a]).join(' и ')} сейчас работает — сообщение допишется в его работу`
     : plan
       ? 'Сначала план: агент изучит задачу и предложит план, вы его утвердите'
@@ -347,7 +440,8 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
       onDragLeave={() => setDrag(false)}
       onDrop={onDrop}
     >
-      {cmdItems.length > 0 && <CommandMenu items={cmdItems} active={Math.min(cmdIndex, cmdItems.length - 1)} agents={agents} onPick={pickCommand} />}
+      {showFiles && <FileMenu items={fileItems} active={Math.min(fileIndex, Math.max(0, fileItems.length - 1))} onPick={pickFile} />}
+      {!showFiles && cmdItems.length > 0 && <CommandMenu items={cmdItems} active={Math.min(cmdIndex, cmdItems.length - 1)} agents={agents} onPick={pickCommand} />}
       <Attachments items={files} onRemove={(i) => setFiles(files.filter((_, j) => j !== i))} />
       <textarea
         ref={ref}
@@ -361,6 +455,18 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
         }}
         onPaste={onPaste}
         onKeyDown={(e) => {
+          if (showFiles && fileItems.length) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setFileIndex((fileIndex + (e.key === 'ArrowDown' ? 1 : fileItems.length - 1)) % fileItems.length);
+              return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault();
+              pickFile(fileItems[Math.min(fileIndex, fileItems.length - 1)]);
+              return;
+            }
+          }
           if (cmdItems.length) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault();
@@ -405,10 +511,40 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
             </button>
           ))}
         </div>
-        <button class={`toggle ${plan ? 'on' : ''}`} onClick={() => setPlan(!plan)} title="Сначала план: агент ничего не меняет, а предлагает план на утверждение">
-          <Icon name="todo" size={14} />
-          План
-        </button>
+        {effective === 'both' && !pipeline && (
+          <button class={`toggle ${duel ? 'on' : ''}`} onClick={() => setDuel(!duel)} title="Раздельно: каждый агент решает задачу в своей копии проекта, потом вы сравниваете и применяете лучший вариант">
+            <Icon name="swap" size={14} />
+            Раздельно
+          </button>
+        )}
+        {!pipeline && (
+          <button class={`toggle ${plan ? 'on' : ''}`} onClick={() => setPlan(!plan)} title="Сначала план: агент ничего не меняет, а предлагает план на утверждение">
+            <Icon name="todo" size={14} />
+            План
+          </button>
+        )}
+        <div class="menu-wrap">
+          <button class={`toggle ${pipeline ? 'on' : ''}`} onClick={() => (pipeline ? setPipeline(null) : setPipeMenu(!pipeMenu))} title="Сценарий: агенты выполняют шаги по очереди">
+            <Icon name="flow" size={14} />
+            {pipeline ? pipeline.name : 'Сценарий'}
+            {pipeline && <Icon name="x" size={12} />}
+          </button>
+          {pipeMenu && (
+            <div class="menu up-menu" onMouseLeave={() => setPipeMenu(false)}>
+              <div class="menu-section">Сценарии</div>
+              {pipelines.map((p) => (
+                <button key={p.id} class="menu-option" onClick={() => { setPipeline(p); setPipeMenu(false); }}>
+                  <span>
+                    <b>{p.name}</b>
+                    <small>{p.steps.map((s) => NAME[s.agent]).join(' → ')}</small>
+                  </span>
+                </button>
+              ))}
+              <div class="menu-sep" />
+              <small class="menu-note">Свои сценарии — в настройках.</small>
+            </div>
+          )}
+        </div>
         <span class={`composer-hint ${steering ? 'steer' : ''}`}>{hint}</span>
         {running && (
           <button class="stop-btn" onClick={onStop} title="Остановить всех агентов в этом чате">
@@ -577,7 +713,7 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
   );
 }
 
-function RoomHeader({ room, codexModels, onDelete }) {
+function RoomHeader({ room, codexModels, onDelete, panel, setPanel }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(room.title);
   const [menu, setMenu] = useState(false);
@@ -646,6 +782,9 @@ function RoomHeader({ room, codexModels, onDelete }) {
           context={ctx.codex}
           onCommand={(text) => duo.send(room.id, { text, targets: ['codex'] })}
         />
+        <button class={`icon-btn ${panel ? 'active' : ''}`} onClick={() => setPanel(panel ? '' : 'changes')} title="Панель: изменения в git и память проекта">
+          <Icon name="panel" size={16} />
+        </button>
         <div class="menu-wrap">
           <button class="icon-btn" onClick={() => setMenu(!menu)} title="Ещё">
             <Icon name="more" size={16} />
@@ -669,6 +808,12 @@ function RoomHeader({ room, codexModels, onDelete }) {
               <button onClick={() => { setMenu(false); duo.openProject(room.cwd); }}>
                 <Icon name="external" size={14} /> Открыть папку проекта
               </button>
+              <button onClick={() => { setMenu(false); setPanel('memory'); }}>
+                <Icon name="memory" size={14} /> Память проекта
+              </button>
+              <button onClick={() => { setMenu(false); duo.exportRoom(room.id); }}>
+                <Icon name="external" size={14} /> Экспорт в Markdown
+              </button>
               <button class="danger" onClick={() => { setMenu(false); onDelete(); }}>
                 <Icon name="trash" size={14} /> Удалить чат
               </button>
@@ -680,7 +825,12 @@ function RoomHeader({ room, codexModels, onDelete }) {
   );
 }
 
-function RoomView({ room, codexModels, onDelete }) {
+function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight }) {
+  const [panel, setPanelState] = useState(() => store('panel') || '');
+  const setPanel = (p) => {
+    setPanelState(p);
+    store('panel', p);
+  };
   const [target, setTargetState] = useState(() => store(`target:${room.id}`) || 'both');
   const setTarget = (t) => {
     setTargetState(t);
@@ -694,6 +844,15 @@ function RoomView({ room, codexModels, onDelete }) {
   const top = room.messages.filter((m) => !m.parentId);
   const running = room.running && (room.running.claude || room.running.codex);
   const [scrollRef, innerRef, onScroll, stickNow] = useStickyScroll();
+  useEffect(() => {
+    if (!highlight) return;
+    const el = document.querySelector(`[data-msg="${highlight}"]`);
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1600);
+    }
+  }, [highlight]);
 
   const send = (text, agents, opts = {}) => {
     stickNow();
@@ -717,7 +876,9 @@ function RoomView({ room, codexModels, onDelete }) {
 
   return (
     <section class="room-view">
-      <RoomHeader room={room} codexModels={codexModels} onDelete={onDelete} />
+      <RoomHeader room={room} codexModels={codexModels} onDelete={onDelete} panel={panel} setPanel={setPanel} />
+      <div class="room-body">
+      <div class="room-main">
       <div class="scroll" ref={scrollRef} onScroll={onScroll} onClick={onClick}>
         <div class="thread" ref={innerRef}>
           {top.length === 0 && (
@@ -730,11 +891,17 @@ function RoomView({ room, codexModels, onDelete }) {
           )}
           {top.map((m) =>
             m.role === 'user' ? (
-              <UserMessage msg={m} key={m.id} />
+              <div data-msg={m.id} key={m.id}>
+                <UserMessage msg={m} />
+              </div>
             ) : m.role === 'system' ? (
               <SystemMessage msg={m} key={m.id} />
+            ) : m.role === 'duel' ? (
+              <DuelCard card={m} room={room} key={m.id} />
             ) : (
-              <AgentMessage msg={m} room={room} byId={byId} key={m.id} onReview={review} />
+              <div data-msg={m.id} key={m.id}>
+                <AgentMessage msg={m} room={room} byId={byId} onReview={review} />
+              </div>
             ),
           )}
         </div>
@@ -749,7 +916,13 @@ function RoomView({ room, codexModels, onDelete }) {
           setTarget={setTarget}
           autoFocus={room.id}
           commands={commands}
+          cwd={room.cwd}
+          pipelines={pipelines}
+          focusTick={focusTick}
         />
+      </div>
+      </div>
+      {panel && <SidePanel room={room} tab={panel} setTab={setPanel} onClose={() => setPanel('')} />}
       </div>
     </section>
   );
@@ -791,7 +964,7 @@ function EnvWarning({ env }) {
   );
 }
 
-function NewChat({ settings, env, onCreated }) {
+function NewChat({ settings, env, onCreated, focusTick }) {
   const [project, setProject] = useState(settings.projects[0] || '');
   const [target, setTarget] = useState(store('target:new') || 'both');
   const [history, setHistory] = useState([]);
@@ -876,6 +1049,9 @@ function NewChat({ settings, env, onCreated }) {
           }}
           autoFocus
           commands={commands}
+          cwd={project || null}
+          pipelines={settings.pipelines || []}
+          focusTick={focusTick}
           placeholder="Опишите задачу. Например: «@claude спланируй, а Codex пусть проверит план»"
         />
         {history.length > 0 && (
@@ -1046,6 +1222,166 @@ function AgentsTab({ settings, env, onSaved }) {
   );
 }
 
+function TelegramTab({ settings, onSaved }) {
+  const t = settings.telegram || {};
+  const [token, setToken] = useState(t.token || '');
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    duo.telegramStatus().then(setStatus);
+    return duo.onTelegram((s) => {
+      setStatus(s);
+      if (s.status === 'linked') onSaved();
+    });
+  }, []);
+  const save = (patch) => duo.setSettings({ telegram: patch }).then(onSaved);
+  const st = status && status.status;
+  return (
+    <div class="tab-body">
+      <p class="field-hint">
+        Бот присылает уведомления, когда агент закончил, просит разрешение или задаёт вопрос. Разрешать и отвечать можно прямо в Telegram, а ответ (Reply) на сообщение бота уходит в нужный чат.
+      </p>
+      <ol class="steps-help">
+        <li>
+          В Telegram откройте <b>@BotFather</b>, отправьте <code>/newbot</code> и придумайте имя — он пришлёт токен.
+        </li>
+        <li>Вставьте токен сюда и нажмите «Подключить».</li>
+        <li>Откройте своего бота и нажмите «Старт» (или отправьте /start) — DuoCode запомнит ваш чат.</li>
+      </ol>
+      <div class="field">
+        <label>Токен бота</label>
+        <div class="field-row">
+          <input type="password" value={token} placeholder="123456789:AA…" onInput={(e) => setToken(e.target.value.trim())} spellcheck={false} />
+          <button class="btn small primary" onClick={() => save({ token })} disabled={token === (t.token || '')}>
+            Подключить
+          </button>
+          {t.token && (
+            <button class="btn small ghost" onClick={() => { setToken(''); save({ token: '', chatId: '' }); }}>
+              Отключить
+            </button>
+          )}
+        </div>
+        <div class="field-hint">
+          {!t.token && 'Не подключено.'}
+          {t.token && st === 'waiting' && (
+            <span class="warn">
+              Бот @{status.bot} найден. Отправьте ему /start в Telegram.
+            </span>
+          )}
+          {t.token && st === 'linked' && <span>Подключено{status.bot ? ` к @${status.bot}` : ''}. </span>}
+          {t.token && st === 'error' && <span class="warn">Ошибка: {status.error}</span>}
+          {t.token && st === 'linked' && (
+            <button class="link small" onClick={() => duo.telegramTest()}>
+              Отправить тестовое сообщение
+            </button>
+          )}
+        </div>
+      </div>
+      <Switch checked={t.notifyFinish !== false} onChange={(v) => save({ notifyFinish: v })} label="Агент закончил работу" hint="С кратким ответом. Ответьте на сообщение, чтобы продолжить чат" />
+      <Switch checked={t.notifyApprovals !== false} onChange={(v) => save({ notifyApprovals: v })} label="Подтверждения, планы и вопросы" hint="С кнопками «Разрешить», «Отклонить» и вариантами ответа" />
+      <Switch checked={t.notifyLimits !== false} onChange={(v) => save({ notifyLimits: v })} label="Лимиты" hint="Почти исчерпан, кончится раньше сброса, снова доступен" />
+      <p class="field-hint">Токен хранится только на этом компьютере, в файле настроек DuoCode.</p>
+    </div>
+  );
+}
+
+function PipelinesTab({ settings, onSaved }) {
+  const [list, setList] = useState(settings.pipelines || []);
+  const [edit, setEdit] = useState(null);
+  const save = async (next) => {
+    setList(next);
+    await duo.setSettings({ pipelines: next });
+    onSaved();
+  };
+  if (edit) {
+    const upd = (patch) => setEdit({ ...edit, ...patch });
+    const step = (i, patch) => upd({ steps: edit.steps.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
+    return (
+      <div class="tab-body">
+        <div class="field">
+          <label>Название</label>
+          <input class="text-input" value={edit.name} onInput={(e) => upd({ name: e.target.value })} />
+        </div>
+        {edit.steps.map((s, i) => (
+          <div class="pipe-step" key={i}>
+            <div class="pipe-step-head">
+              <b>Шаг {i + 1}</b>
+              <div class="segmented">
+                {['claude', 'codex'].map((a) => (
+                  <button key={a} class={`seg ${s.agent === a ? 'active' : ''}`} onClick={() => step(i, { agent: a })}>
+                    <i class={`dot ${a}`} />
+                    {NAME[a]}
+                  </button>
+                ))}
+              </div>
+              <button class="icon-btn" title="Удалить шаг" onClick={() => upd({ steps: edit.steps.filter((_, j) => j !== i) })} disabled={edit.steps.length < 2}>
+                <Icon name="trash" size={14} />
+              </button>
+            </div>
+            <textarea rows={3} value={s.prompt} onInput={(e) => step(i, { prompt: e.target.value })} placeholder="Инструкция для шага. {task} — ваша задача" />
+          </div>
+        ))}
+        <button class="btn small" onClick={() => upd({ steps: [...edit.steps, { agent: 'codex', prompt: '' }] })}>
+          <Icon name="plus" size={14} /> Добавить шаг
+        </button>
+        <p class="field-hint">В инструкциях {'{task}'} заменяется на текст, который вы напишете. Каждый агент видит ответы предыдущих шагов в общем чате.</p>
+        <div class="modal-actions">
+          <button class="btn ghost" onClick={() => setEdit(null)}>
+            Отмена
+          </button>
+          <button
+            class="btn primary"
+            disabled={!edit.name.trim() || !edit.steps.length}
+            onClick={async () => {
+              const exists = list.some((p) => p.id === edit.id);
+              await save(exists ? list.map((p) => (p.id === edit.id ? edit : p)) : [...list, edit]);
+              setEdit(null);
+            }}
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div class="tab-body">
+      <p class="field-hint">Сценарий — цепочка шагов: агенты выполняют их по очереди, каждый видит результат предыдущих. Выбирается кнопкой «Сценарий» у поля ввода.</p>
+      <ul class="pipe-list">
+        {list.map((p) => (
+          <li key={p.id}>
+            <span>
+              <b>{p.name}</b>
+              <small>{p.steps.map((s) => NAME[s.agent]).join(' → ')}</small>
+            </span>
+            <button class="btn small" onClick={() => setEdit(JSON.parse(JSON.stringify(p)))}>
+              Изменить
+            </button>
+            <button class="icon-btn" title="Удалить" onClick={() => confirm(`Удалить сценарий «${p.name}»?`) && save(list.filter((x) => x.id !== p.id))}>
+              <Icon name="trash" size={14} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button class="btn small" onClick={() => setEdit({ id: 'p' + Date.now(), name: 'Новый сценарий', steps: [{ agent: 'claude', prompt: '{task}' }, { agent: 'codex', prompt: '' }] })}>
+        <Icon name="plus" size={14} /> Новый сценарий
+      </button>
+    </div>
+  );
+}
+
+function GeneralTab({ settings, onSaved }) {
+  const g = settings.general || {};
+  const set = (patch) => duo.setSettings({ general: patch }).then(onSaved);
+  const key = duo.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl+Shift+Space';
+  return (
+    <div class="tab-body">
+      <Switch checked={!!g.closeToTray} onChange={(v) => set({ closeToTray: v })} label="Сворачивать в трей при закрытии окна" hint="Агенты продолжают работать в фоне. Выйти — через значок в трее" />
+      <Switch checked={g.hotkey !== false} onChange={(v) => set({ hotkey: v })} label={`Горячая клавиша ${key}`} hint="Показывает DuoCode из любого приложения и ставит курсор в поле ввода" />
+      <Switch checked={g.notifyLimits !== false} onChange={(v) => set({ notifyLimits: v })} label="Уведомления о лимитах" hint="Почти исчерпан, кончится раньше сброса, снова доступен" />
+    </div>
+  );
+}
+
 function AboutTab({ update, onUpdate }) {
   const [version, setVersion] = useState('');
   useEffect(() => {
@@ -1106,6 +1442,9 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
           {[
             ['look', 'Внешний вид'],
             ['agents', 'Агенты'],
+            ['pipelines', 'Сценарии'],
+            ['telegram', 'Telegram'],
+            ['general', 'Общие'],
             ['about', 'О программе'],
           ].map(([id, name]) => (
             <button key={id} class={`tab-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>
@@ -1115,6 +1454,9 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
         </div>
         {tab === 'look' && <AppearanceTab prefs={prefs} />}
         {tab === 'agents' && <AgentsTab settings={settings} env={env} onSaved={onSaved} />}
+        {tab === 'pipelines' && <PipelinesTab settings={settings} onSaved={onSaved} />}
+        {tab === 'telegram' && <TelegramTab settings={settings} onSaved={onSaved} />}
+        {tab === 'general' && <GeneralTab settings={settings} onSaved={onSaved} />}
         {tab === 'about' && <AboutTab update={update} onUpdate={onUpdate} />}
       </div>
     </div>
@@ -1134,6 +1476,9 @@ function App() {
   const [codexModels, setCodexModels] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
   const [update, setUpdate] = useState({ status: 'idle' });
+  const [showStats, setShowStats] = useState(false);
+  const [highlight, setHighlight] = useState(null);
+  const [focusTick, setFocusTick] = useState(0);
   const currentRef = useRef(null);
   currentRef.current = currentId;
 
@@ -1181,11 +1526,14 @@ function App() {
       duo.onUpdate((u) => setUpdate({ ...u })),
       duo.onSettings((st) => setSettings(st)),
       duo.onOpenRoom((id) => open(id)),
+      duo.onNewChat(() => open(null)),
+      duo.onFocusComposer(() => setFocusTick((t) => t + 1)),
     ];
     return () => offs.forEach((off) => off());
   }, []);
 
-  const open = async (id) => {
+  const open = async (id, msgId = null) => {
+    setHighlight(msgId);
     setCurrentId(id);
     currentRef.current = id;
     setRoom(id ? await duo.getRoom(id) : null);
@@ -1239,6 +1587,7 @@ function App() {
         refreshing={refreshing}
         env={env}
         update={update}
+        onStats={() => setShowStats(true)}
         onSettings={() => {
           loadSettings();
           setShowSettings(true);
@@ -1246,9 +1595,10 @@ function App() {
       />
       <main class="main">
         {room ? (
-          <RoomView key={room.id} room={room} codexModels={codexModels} onDelete={removeRoom} />
+          <RoomView key={room.id} room={room} codexModels={codexModels} onDelete={removeRoom} pipelines={settings.pipelines || []} focusTick={focusTick} highlight={highlight} />
         ) : (
           <NewChat
+            focusTick={focusTick}
             settings={settings}
             env={env}
             onCreated={(id) => {
@@ -1258,6 +1608,7 @@ function App() {
           />
         )}
       </main>
+      {showStats && <StatsModal onClose={() => setShowStats(false)} onOpenRoom={(id) => open(id)} />}
       {showSettings && <Settings settings={settings} env={env} update={update} onUpdate={(u) => u && setUpdate({ ...u })} onClose={() => setShowSettings(false)} onSaved={loadSettings} />}
     </div>
     </PrefsContext.Provider>

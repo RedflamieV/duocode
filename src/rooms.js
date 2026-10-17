@@ -10,10 +10,13 @@ const { runClaude, toolPart } = require('./agents/claude');
 const { runCodex } = require('./agents/codex');
 const { clip, uid } = require('./agents/util');
 const { expandCodexPrompt, REVIEW_PROMPT, CODEX_INIT_PROMPT } = require('./commands');
+const memory = require('./memory');
+const gitx = require('./git');
 
 const AGENTS = ['claude', 'codex'];
 const NAME = { claude: 'Claude', codex: 'Codex' };
 const peer = (a) => (a === 'claude' ? 'codex' : 'claude');
+const short = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
 const INSTRUCTIONS = {
   claude: `You are running inside DuoCode, a desktop app where the user works with two coding agents in one shared chat: you (Claude Code, by Anthropic) and Codex (by OpenAI). Both of you work in the same project folder.
@@ -21,23 +24,29 @@ const INSTRUCTIONS = {
 - A message may start with a <duocode_context> block. It is the part of the shared chat you did not take part in (messages addressed to Codex and Codex's answers). Treat it as shared chat history.
 - Do not delegate trivial things, and do not ask Codex to redo finished work unless the user wants a comparison.
 - When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Codex yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Codex costs the user's Codex limits.
+- The block <duocode_memory> is the shared project memory that both agents see. When you learn a durable fact or the user makes a decision worth keeping (conventions, architecture choices, commands, gotchas), save it with the tool mcp__duo__remember. Keep notes short; do not save chatter or temporary state.
 - Reply in the language the user writes in.`,
   codex: `You are running inside DuoCode, a desktop app where the user works with two coding agents in one shared chat: you (Codex, by OpenAI) and Claude Code (by Anthropic). Both of you work in the same project folder.
 - You have the MCP tool ask_claude (server "duo"). Use it to delegate a task to Claude, to get an independent review or a second opinion, or whenever the user asks you to involve Claude. Claude's final answer comes back to you as the tool result, and the user watches Claude work live in the chat.
 - A message may start with a <duocode_context> block. It is the part of the shared chat you did not take part in (messages addressed to Claude and Claude's answers). Treat it as shared chat history.
 - Do not delegate trivial things, and do not ask Claude to redo finished work unless the user wants a comparison.
 - When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Claude yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Claude costs the user's Claude limits.
+- A <duocode_memory> block, when present, is the shared project memory that both agents see. When you learn a durable fact or the user makes a decision worth keeping (conventions, architecture choices, commands, gotchas), save it with the MCP tool remember (server "duo"). Keep notes short; do not save chatter or temporary state.
 - Reply in the language the user writes in.`,
 };
 
 class Rooms extends EventEmitter {
-  constructor({ store, runDir, bridge, codex, getSettings }) {
+  constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, pickAgent }) {
     super();
     this.store = store;
     this.runDir = runDir;
     this.bridge = bridge; // { command, script, port, token }
     this.codex = codex;
     this.getSettings = getSettings;
+    this.checkpoints = checkpoints;
+    this.worktreeDir = worktreeDir;
+    this.pickAgent = pickAgent;
+    this.pipelines = new Map(); // id -> { roomId, cancelled }
     this.rooms = new Map();
     this.runs = new Map(); // messageId -> { room, agent, msg, handle }
     this.main = new Map(); // `${roomId}:${agent}` -> messageId основного хода агента
@@ -48,10 +57,10 @@ class Rooms extends EventEmitter {
     this.flushTimer = null;
 
     fs.mkdirSync(runDir, { recursive: true });
-    this.claudePromptFile = path.join(runDir, 'claude-instructions.md');
-    fs.writeFileSync(this.claudePromptFile, INSTRUCTIONS.claude);
 
     for (const room of store.loadAll()) {
+      // старые версии обрезали заголовок с хвостом «… (ещё N симв.)»
+      room.title = String(room.title || '').replace(/\n?… \(ещё \d+ симв\.\)$/, '…');
       for (const m of room.messages) {
         if (m.role === 'agent' && m.status === 'running') {
           m.status = 'stopped';
@@ -108,13 +117,13 @@ class Rooms extends EventEmitter {
   }
 
   importSession({ tool, sessionId, cwd, title }) {
-    const room = this.rooms.get(this.create({ cwd, title: clip(title, 60) }).id);
+    const room = this.rooms.get(this.create({ cwd, title: short(title, 60) }).id);
     room.sessions[tool] = sessionId;
     room.messages.push({
       id: uid('m'),
       role: 'system',
       ts: Date.now(),
-      text: `Продолжение сессии ${NAME[tool]}: «${clip(title, 120)}». ${NAME[tool]} помнит её целиком.`,
+      text: `Продолжение сессии ${NAME[tool]}: «${short(title, 120)}». ${NAME[tool]} помнит её целиком.`,
     });
     this.touch(room);
     return this.get(room.id);
@@ -123,7 +132,7 @@ class Rooms extends EventEmitter {
   rename(id, title) {
     const room = this.rooms.get(id);
     if (!room) return;
-    room.title = clip(title.trim(), 80) || room.title;
+    room.title = short(title.trim(), 80) || room.title;
     this.touch(room);
   }
 
@@ -150,10 +159,17 @@ class Rooms extends EventEmitter {
 
   // ---------- Сообщения ----------
 
-  send(id, { text, targets, attachments = [], plan = false }) {
+  send(id, { text, targets, attachments = [], plan = false, duel = false, pipeline = null }) {
     const room = this.rooms.get(id);
     text = (text || '').trim();
+    let routed = null;
+    if (targets && targets.includes('auto')) {
+      routed = this.pickAgent();
+      targets = [routed.agent];
+    }
     targets = (targets || []).filter((t) => AGENTS.includes(t));
+    if (room && pipeline && text) return this.runPipeline(room, pipeline, text, attachments);
+    if (room && duel && targets.length === 2 && text) return this.duel(room, text, attachments);
     if (!room || (!text && !attachments.length) || !targets.length) return;
     if (!text) text = 'Посмотри вложения.';
     if (/^\/[\w:.-]+/.test(text)) return this.command(room, text, targets);
@@ -163,7 +179,7 @@ class Rooms extends EventEmitter {
     for (const agent of targets) {
       const mainId = this.main.get(`${room.id}:${agent}`);
       const run = mainId && this.runs.get(mainId);
-      if (run && !plan && run.handle.steer && run.handle.steer(text, attachments)) {
+      if (run && !plan && run.handle && run.handle.steer && run.handle.steer(text, attachments)) {
         run.msg.parts.push({ id: uid('s'), kind: 'steer', text, attachments });
         this.markDirty(room, run.msg);
       } else {
@@ -172,9 +188,9 @@ class Rooms extends EventEmitter {
     }
     if (!fresh.length) return this.touch(room);
 
-    const userMsg = { id: uid('m'), role: 'user', text, targets: fresh, attachments, plan, ts: Date.now(), queued: [] };
+    const userMsg = { id: uid('m'), role: 'user', text, targets: fresh, attachments, plan, routed: routed && routed.reason, ts: Date.now(), queued: [] };
     room.messages.push(userMsg);
-    if (room.title === 'Новый чат') room.title = clip(text.split('\n')[0], 60);
+    if (room.title === 'Новый чат') room.title = short(text.split('\n')[0], 60);
 
     for (const agent of fresh) {
       const key = `${room.id}:${agent}`;
@@ -242,6 +258,185 @@ class Rooms extends EventEmitter {
     this.touch(room);
   }
 
+  // ---------- Откат правок ----------
+
+  async revert(roomId, msgId, redo = false) {
+    const room = this.rooms.get(roomId);
+    const msg = room && room.messages.find((m) => m.id === msgId);
+    const cp = msg && msg.checkpoint;
+    if (!cp) return { ok: false };
+    const r = await this.checkpoints.restore(room.cwd, redo ? cp.after : cp.before, cp.files.map((f) => f.path));
+    cp.reverted = !redo;
+    this.markDirty(room, msg);
+    this.touch(room);
+    return { ok: true, ...r };
+  }
+
+  async checkpointDiff(roomId, msgId, file) {
+    const room = this.rooms.get(roomId);
+    const msg = room && room.messages.find((m) => m.id === msgId);
+    if (!msg || !msg.checkpoint) return '';
+    return this.checkpoints.diff(room.cwd, msg.checkpoint.before, msg.checkpoint.after, file);
+  }
+
+  // ---------- Дуэль: оба агента решают задачу в своих копиях проекта ----------
+
+  async duel(room, text, attachments) {
+    const userMsg = { id: uid('m'), role: 'user', text, targets: AGENTS, attachments, duel: true, ts: Date.now(), queued: [] };
+    room.messages.push(userMsg);
+    if (room.title === 'Новый чат') room.title = short(text.split('\n')[0], 60);
+    this.markDirty(room, userMsg);
+    this.touch(room);
+    const note = (t) => {
+      const m = { id: uid('m'), role: 'system', ts: Date.now(), text: t };
+      room.messages.push(m);
+      this.markDirty(room, m);
+    };
+    if (!(await gitx.isRepo(room.cwd))) {
+      note('Раздельный режим работает только в git-репозитории — запускаю обоих в общей папке. Создать репозиторий можно в панели «Изменения».');
+      for (const a of AGENTS) this.runAgent(room, a, { prompt: text, attachments });
+      return;
+    }
+    const base = await gitx.snapshotCommit(room.cwd);
+    const duelId = uid('duel-');
+    const card = { id: duelId, role: 'duel', ts: Date.now(), status: 'running', base, results: {} };
+    const runs = [];
+    for (const a of AGENTS) {
+      const dir = path.join(this.worktreeDir, `${duelId}-${a}`);
+      if (!base || !(await gitx.addWorktree(room.cwd, dir, base))) {
+        note('Не удалось создать отдельные копии проекта — запускаю обоих в общей папке.');
+        for (const b of AGENTS) this.runAgent(room, b, { prompt: text, attachments });
+        return;
+      }
+      card.results[a] = { dir, status: 'running' };
+      runs.push(this.runAgent(room, a, { prompt: text, attachments, cwd: dir, isolated: true, duelId }));
+    }
+    room.messages.push(card);
+    this.markDirty(room, card);
+    await Promise.all(
+      runs.map(async ({ msg, done }) => {
+        await done;
+        const res = card.results[msg.agent];
+        const ch = await gitx.worktreeChanges(res.dir, base);
+        const patchFile = path.join(this.worktreeDir, `${duelId}-${msg.agent}.patch`);
+        fs.writeFileSync(patchFile, ch.patch);
+        Object.assign(res, { status: msg.status, files: ch.files, diff: clip(ch.diff, 200000), patchFile, msgId: msg.id });
+        this.markDirty(room, card);
+      }),
+    );
+    card.status = 'pending';
+    this.markDirty(room, card);
+    this.touch(room);
+  }
+
+  async applyDuel(roomId, duelId, choice) {
+    const room = this.rooms.get(roomId);
+    const card = room && room.messages.find((m) => m.id === duelId);
+    if (!card || card.status !== 'pending') return { ok: false };
+    let result = { ok: true };
+    if (choice !== 'none') {
+      const res = card.results[choice];
+      result = await gitx.applyPatch(room.cwd, res.patchFile);
+      if (!result.ok) {
+        card.error = `Не удалось применить вариант ${NAME[choice]}: ${result.output}`;
+        this.markDirty(room, card);
+        return result;
+      }
+    }
+    card.status = choice === 'none' ? 'discarded' : `applied:${choice}`;
+    card.error = null;
+    for (const res of Object.values(card.results)) {
+      await gitx.removeWorktree(room.cwd, res.dir).catch(() => {});
+      if (res.patchFile) fs.rm(res.patchFile, () => {});
+    }
+    const m = { id: uid('m'), role: 'system', ts: Date.now(), text: choice === 'none' ? 'Ни один вариант не применён.' : `Применён вариант ${NAME[choice]}.` };
+    room.messages.push(m);
+    this.markDirty(room, m);
+    this.markDirty(room, card);
+    this.touch(room);
+    return result;
+  }
+
+  // ---------- Сценарии: шаги по очереди, каждый видит результат предыдущих ----------
+
+  async runPipeline(room, pipeline, task, attachments = []) {
+    const id = uid('pl-');
+    const state = { roomId: room.id, cancelled: false };
+    this.pipelines.set(id, state);
+    const steps = pipeline.steps || [];
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        if (state.cancelled) break;
+        const step = steps[i];
+        const agent = AGENTS.includes(step.agent) ? step.agent : 'claude';
+        const label = `${pipeline.name} · шаг ${i + 1} из ${steps.length}`;
+        const prompt = (step.prompt || '{task}').replace(/\{task\}/g, task);
+        const userMsg = { id: uid('m'), role: 'user', text: prompt, targets: [agent], attachments: i === 0 ? attachments : [], pipeline: label, ts: Date.now(), queued: [] };
+        room.messages.push(userMsg);
+        if (room.title === 'Новый чат') room.title = short(task.split('\n')[0], 60);
+        this.markDirty(room, userMsg);
+        this.touch(room);
+        // ждём, пока агент освободится от своего хода
+        while (this.main.has(`${room.id}:${agent}`) && !state.cancelled) await new Promise((r) => setTimeout(r, 500));
+        if (state.cancelled) break;
+        const { done } = this.runAgent(room, agent, { prompt, attachments: i === 0 ? attachments : [], pipeline: label });
+        const r = await done;
+        if (r.error || r.stopped) break;
+      }
+    } finally {
+      this.pipelines.delete(id);
+    }
+  }
+
+  // ---------- Поиск и экспорт ----------
+
+  search(q) {
+    const needle = (q || '').trim().toLowerCase();
+    if (needle.length < 2) return [];
+    const out = [];
+    for (const room of this.rooms.values()) {
+      for (const m of room.messages) {
+        const text = m.role === 'user' ? m.text : m.role === 'agent' ? m.finalText || m.parts.filter((p) => p.kind === 'text').map((p) => p.text).join('\n') : '';
+        if (!text) continue;
+        const i = text.toLowerCase().indexOf(needle);
+        if (i < 0) continue;
+        const from = Math.max(0, i - 40);
+        out.push({
+          roomId: room.id,
+          roomTitle: room.title,
+          msgId: m.parentId || m.id,
+          who: m.role === 'user' ? 'Вы' : NAME[m.agent],
+          snippet: (from ? '…' : '') + text.slice(from, i + needle.length + 80).replace(/\s+/g, ' '),
+          ts: m.ts,
+        });
+        if (out.length >= 60) return out;
+      }
+    }
+    return out.sort((a, b) => b.ts - a.ts);
+  }
+
+  exportMarkdown(id) {
+    const room = this.rooms.get(id);
+    if (!room) return '';
+    const lines = [`# ${room.title}`, '', `Проект: \`${room.cwd}\``, `Экспорт: ${new Date().toLocaleString()}`, ''];
+    for (const m of room.messages) {
+      if (m.role === 'user') lines.push(`## Вы → ${m.targets.map((t) => NAME[t]).join(' и ')}`, '', m.text, '');
+      else if (m.role === 'system') lines.push(`> ${m.text}`, '');
+      else if (m.role === 'agent') {
+        const head = m.parentId ? `### ${NAME[m.agent]} (по запросу ${NAME[m.requestedBy]})` : `## ${NAME[m.agent]}${m.model ? ` · ${m.model}` : ''}`;
+        lines.push(head, '');
+        for (const p of m.parts) {
+          if (p.kind === 'text') lines.push(p.text, '');
+          else if (p.kind === 'tool') lines.push(`- _${p.title}${p.subtitle ? `: ${p.subtitle}` : ''}${p.command ? `: \`${p.command.split('\n')[0]}\`` : ''}_`);
+          else if (p.kind === 'delegate') lines.push(`- _подключил ${NAME[p.to]}: ${clip(p.prompt, 200)}_`);
+        }
+        if (m.error) lines.push('', `**Ошибка:** ${m.error}`);
+        lines.push('');
+      }
+    }
+    return lines.join('\n');
+  }
+
   // Кнопки под планом Codex: выполнить или доработать.
   planAction(roomId, msgId, action, feedback) {
     const room = this.rooms.get(roomId);
@@ -266,7 +461,12 @@ class Rooms extends EventEmitter {
       }
     }
     for (const [aid, ap] of this.approvals) if (ap.room.id === id) this.respondApproval(id, aid, 'deny');
-    for (const run of this.runs.values()) if (run.room.id === id) run.handle && run.handle.stop();
+    for (const run of this.runs.values()) {
+      if (run.room.id !== id) continue;
+      run.stopRequested = true;
+      if (run.handle) run.handle.stop();
+    }
+    for (const p of this.pipelines.values()) if (p.roomId === id) p.cancelled = true;
   }
 
   // Сводка того, что агент пропустил в общем чате.
@@ -292,9 +492,11 @@ class Rooms extends EventEmitter {
     return `<duocode_context>\nЧто произошло в общем чате DuoCode без тебя:\n${lines.join('\n')}\n</duocode_context>\n\n`;
   }
 
-  runAgent(room, agent, { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null }) {
+  // isolated: ход в отдельной копии проекта (дуэль) — без общей сессии агента и без отката.
+  runAgent(room, agent, { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null, cwd = null, isolated = false, duelId = null, pipeline = null }) {
     const key = `${room.id}:${agent}`;
-    const fork = this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
+    const fork = isolated || this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
+    const workDir = cwd || room.cwd;
     const msg = {
       id: uid('m'),
       role: 'agent',
@@ -306,8 +508,10 @@ class Rooms extends EventEmitter {
       parentId,
       ts: Date.now(),
       finishedAt: null,
-      fork,
+      fork: fork && !isolated,
       plan,
+      duelId,
+      pipeline,
       effort: (agent === 'claude' ? room.settings.claudeEffort : room.settings.codexEffort) || null,
     };
     room.messages.push(msg);
@@ -318,135 +522,161 @@ class Rooms extends EventEmitter {
     if (requestedBy) {
       fullPrompt += `[Запрос от ${NAME[requestedBy]} через DuoCode. Твой итоговый ответ целиком вернётся ${NAME[requestedBy]}, поэтому отвечай по делу и самодостаточно.]\n\n`;
     }
+    if (isolated) {
+      fullPrompt += `[Режим сравнения DuoCode: ${NAME[peer(agent)]} параллельно решает ту же задачу в своей копии проекта. Работай самостоятельно, не вызывай ${NAME[peer(agent)]}. Пользователь сравнит два решения и выберет одно.]\n\n`;
+    }
     fullPrompt += prompt;
 
-    const settings = this.getSettings();
-    const env = {
-      ELECTRON_RUN_AS_NODE: '1',
-      DUO_PORT: String(this.bridge.port),
-      DUO_TOKEN: this.bridge.token,
-      DUO_ROOM: room.id,
-    };
-    let handle;
-    let mcpFile = null;
-    if (agent === 'claude') {
-      mcpFile = path.join(this.runDir, `${msg.id}.mcp.json`);
-      fs.writeFileSync(
-        mcpFile,
-        JSON.stringify({
-          mcpServers: {
-            duo: {
-              type: 'stdio',
-              command: this.bridge.command,
-              args: [this.bridge.script],
-              env: { ...env, DUO_AGENT: 'claude', DUO_RUN: msg.id },
-            },
-          },
-        }),
-      );
-      handle = runClaude({
-        command: settings.claudeCommand,
-        prompt: fullPrompt,
-        attachments,
-        plan,
-        cwd: room.cwd,
-        sessionId: room.sessions.claude,
-        fork: fork && !!room.sessions.claude,
-        mode: room.settings.mode,
-        model: room.settings.claudeModel,
-        effort: room.settings.claudeEffort,
-        mcpConfigPath: mcpFile,
-        systemPromptPath: this.claudePromptFile,
-      });
-    } else {
-      handle = runCodex(this.codex, {
-        prompt: fullPrompt,
-        action,
-        review,
-        attachments,
-        plan,
-        threadId: room.sessions.codex,
-        fork: fork && !!room.sessions.codex,
-        cwd: room.cwd,
-        mode: room.settings.mode,
-        model: room.settings.codexModel,
-        effort: room.settings.codexEffort,
-        instructions: INSTRUCTIONS.codex,
-        config: {
-          'mcp_servers.duo': {
-            command: this.bridge.command,
-            args: [this.bridge.script],
-            env: { ...env, DUO_AGENT: 'codex' },
-            startup_timeout_sec: 30,
-            tool_timeout_sec: 3600,
-          },
-        },
-        onApproval: (kind, data) => this.requestApproval(room, msg, data),
-        onQuestion: (questions) => this.requestAnswers(room, msg, questions),
-      });
-    }
-
-    const run = { room, agent, msg, handle };
+    const run = { room, agent, msg, handle: null, stopRequested: false };
     this.runs.set(msg.id, run);
     this.markDirty(room, msg);
     this.emitRooms();
 
-    handle.on('part', (p) => {
-      const i = msg.parts.findIndex((x) => x.id === p.id);
-      if (i >= 0) msg.parts[i] = { ...msg.parts[i], ...p };
-      else msg.parts.push(p);
-      this.markDirty(room, msg);
-    });
-    handle.on('draft', (text, kind) => {
-      msg.draft = text || '';
-      msg.draftKind = kind || 'text';
-      this.markDirty(room, msg);
-    });
-    handle.on('session', (sid, model, effort) => {
-      if (!fork && sid) room.sessions[agent] = sid;
-      if (model) msg.model = model;
-      if (effort) msg.effort = effort;
-      this.markDirty(room, msg);
-    });
-    handle.on('ratelimit', (info) => this.emit('claude-ratelimit', info));
-    handle.on('context', (c) => {
-      if (fork) return;
-      if (!room.context) room.context = {};
-      const cur = { ...(room.context[agent] || {}) };
-      for (const [k, v] of Object.entries(c)) if (v != null) cur[k] = v;
-      room.context[agent] = cur;
-      this.emitRooms();
-    });
-    handle.on('warning', (w) => {
-      if (w) msg.warning = w;
-      this.markDirty(room, msg);
-    });
+    let resolveDone;
+    const done = new Promise((r) => (resolveDone = r));
+    const tmpFiles = [];
+    let before = null;
 
-    const done = new Promise((resolve) => {
-      handle.on('done', (r) => {
-        msg.status = r.stopped ? 'stopped' : r.error ? 'error' : 'done';
-        msg.error = r.error || null;
-        msg.finalText = r.text || '';
-        msg.cost = r.cost;
-        msg.finishedAt = Date.now();
-        msg.draft = '';
-        for (const p of msg.parts) if (p.kind === 'tool' && p.status === 'running') p.status = r.error ? 'error' : 'ok';
-        for (const [aid, ap] of this.approvals) if (ap.msg.id === msg.id) this.respondApproval(room.id, aid, 'deny');
-        if (plan && agent === 'codex' && msg.status === 'done' && !requestedBy) {
-          msg.parts.push({ id: uid('p'), kind: 'planReady', status: 'pending' });
+    const finish = async (r) => {
+      msg.status = r.stopped ? 'stopped' : r.error ? 'error' : 'done';
+      msg.error = r.error || null;
+      msg.finalText = r.text || '';
+      msg.cost = r.cost;
+      msg.draft = '';
+      for (const p of msg.parts) if (p.kind === 'tool' && p.status === 'running') p.status = r.error ? 'error' : 'ok';
+      for (const [aid, ap] of this.approvals) if (ap.msg.id === msg.id) this.respondApproval(room.id, aid, 'deny');
+      if (plan && agent === 'codex' && msg.status === 'done' && !requestedBy) {
+        msg.parts.push({ id: uid('p'), kind: 'planReady', status: 'pending' });
+      }
+      for (const f of tmpFiles) fs.rm(f, () => {});
+      // снимок после хода: что агент поменял в файлах — для кнопки «Откатить»
+      if (before && !isolated) {
+        const after = await this.checkpoints.snapshot(workDir).catch(() => null);
+        const files = after ? await this.checkpoints.changes(workDir, before, after).catch(() => []) : [];
+        if (files.length) msg.checkpoint = { before, after, files, reverted: false };
+      }
+      msg.finishedAt = Date.now();
+      this.runs.delete(msg.id);
+      this.markDirty(room, msg);
+      if (this.main.get(key) === msg.id) {
+        this.main.delete(key);
+        this.nextInQueue(room, agent);
+      }
+      this.touch(room);
+      this.emit('finished', room, msg);
+      resolveDone(r);
+    };
+
+    const start = async () => {
+      if (!isolated) before = await this.checkpoints.snapshot(workDir).catch(() => null);
+      const settings = this.getSettings();
+      const env = {
+        ELECTRON_RUN_AS_NODE: '1',
+        DUO_PORT: String(this.bridge.port),
+        DUO_TOKEN: this.bridge.token,
+        DUO_ROOM: room.id,
+      };
+      const memoryBlock = memory.block(room.cwd);
+      let handle;
+      if (agent === 'claude') {
+        const mcpFile = path.join(this.runDir, `${msg.id}.mcp.json`);
+        const promptFile = path.join(this.runDir, `${msg.id}.prompt.md`);
+        tmpFiles.push(mcpFile, promptFile);
+        fs.writeFileSync(
+          mcpFile,
+          JSON.stringify({
+            mcpServers: {
+              duo: { type: 'stdio', command: this.bridge.command, args: [this.bridge.script], env: { ...env, DUO_AGENT: 'claude', DUO_RUN: msg.id } },
+            },
+          }),
+        );
+        fs.writeFileSync(promptFile, INSTRUCTIONS.claude + (memoryBlock ? `\n\nShared project memory (both agents see it):\n${memoryBlock}` : ''));
+        handle = runClaude({
+          command: settings.claudeCommand,
+          prompt: fullPrompt,
+          attachments,
+          plan,
+          cwd: workDir,
+          sessionId: isolated ? null : room.sessions.claude,
+          fork: fork && !isolated && !!room.sessions.claude,
+          mode: room.settings.mode,
+          model: room.settings.claudeModel,
+          effort: room.settings.claudeEffort,
+          mcpConfigPath: mcpFile,
+          systemPromptPath: promptFile,
+        });
+      } else {
+        // память Codex получает в сообщении, когда она изменилась с прошлого раза
+        let text = fullPrompt;
+        const hash = memoryBlock ? String(memoryBlock.length) + memoryBlock.slice(-64) : '';
+        if (!room.memorySeen) room.memorySeen = {};
+        if (memoryBlock && !raw && (isolated || room.memorySeen.codex !== hash)) {
+          text = `${memoryBlock}\n\n${text}`;
+          if (!isolated) room.memorySeen.codex = hash;
         }
-        this.runs.delete(msg.id);
-        if (mcpFile) fs.rm(mcpFile, () => {});
+        handle = runCodex(this.codex, {
+          prompt: text,
+          action,
+          review,
+          attachments,
+          plan,
+          threadId: room.sessions.codex,
+          fork: fork && !!room.sessions.codex,
+          cwd: workDir,
+          mode: room.settings.mode,
+          model: room.settings.codexModel,
+          effort: room.settings.codexEffort,
+          instructions: INSTRUCTIONS.codex,
+          config: {
+            'mcp_servers.duo': {
+              command: this.bridge.command,
+              args: [this.bridge.script],
+              env: { ...env, DUO_AGENT: 'codex' },
+              startup_timeout_sec: 30,
+              tool_timeout_sec: 3600,
+            },
+          },
+          onApproval: (kind, data) => this.requestApproval(room, msg, data),
+          onQuestion: (questions) => this.requestAnswers(room, msg, questions),
+        });
+      }
+      run.handle = handle;
+
+      handle.on('part', (p) => {
+        const i = msg.parts.findIndex((x) => x.id === p.id);
+        if (i >= 0) msg.parts[i] = { ...msg.parts[i], ...p };
+        else msg.parts.push(p);
         this.markDirty(room, msg);
-        if (this.main.get(key) === msg.id) {
-          this.main.delete(key);
-          this.nextInQueue(room, agent);
-        }
-        this.touch(room);
-        this.emit('finished', room, msg);
-        resolve(r);
       });
-    });
+      handle.on('draft', (text, kind) => {
+        msg.draft = text || '';
+        msg.draftKind = kind || 'text';
+        this.markDirty(room, msg);
+      });
+      handle.on('session', (sid, model, effort) => {
+        if (!fork && sid) room.sessions[agent] = sid;
+        if (model) msg.model = model;
+        if (effort) msg.effort = effort;
+        this.markDirty(room, msg);
+      });
+      handle.on('ratelimit', (info) => this.emit('claude-ratelimit', info));
+      handle.on('context', (c) => {
+        if (fork) return;
+        if (!room.context) room.context = {};
+        const cur = { ...(room.context[agent] || {}) };
+        for (const [k, v] of Object.entries(c)) if (v != null) cur[k] = v;
+        room.context[agent] = cur;
+        this.emitRooms();
+      });
+      handle.on('warning', (w) => {
+        if (w) msg.warning = w;
+        this.markDirty(room, msg);
+      });
+      handle.on('done', (r) => finish(r).catch(() => resolveDone(r)));
+      if (run.stopRequested) handle.stop();
+    };
+
+    start().catch((err) => finish({ text: '', error: err.message }));
     return { msg, done };
   }
 
@@ -482,7 +712,7 @@ class Rooms extends EventEmitter {
     msg.parts.push(part);
     this.markDirty(room, msg);
     this.emitRooms();
-    this.emit('attention', room, msg, { title: questions[0] ? questions[0].question : 'Вопрос' });
+    this.emit('attention', room, msg, part);
     return new Promise((resolve) => this.approvals.set(part.id, { room, msg, part, resolve, question: true }));
   }
 
@@ -577,6 +807,16 @@ class Rooms extends EventEmitter {
       return allow;
     }
 
+    if (tool === 'remember') {
+      const note = String(args.note || '').trim();
+      if (!note) return { isError: true, text: 'Пустая заметка' };
+      memory.append(room.cwd, note, NAME[agent]);
+      from.msg.parts.push({ id: uid('r'), kind: 'tool', icon: 'memory', title: 'Запомнил', subtitle: short(note, 200), status: 'ok' });
+      this.markDirty(room, from.msg);
+      this.emit('memory', room.cwd);
+      return { text: 'Сохранено в общую память проекта.' };
+    }
+
     const to = tool === 'ask_codex' ? 'codex' : tool === 'ask_claude' ? 'claude' : null;
     if (!to || to === agent) return { isError: true, text: `Неизвестный инструмент ${tool}` };
     const prompt = String(args.prompt || '').trim();
@@ -593,7 +833,7 @@ class Rooms extends EventEmitter {
     }
 
     if (policy === 'ask') {
-      const r = await this.requestApproval(room, from.msg, { title: `${NAME[agent]} хочет подключить ${NAME[to]}`, subtitle: clip(prompt, 600) });
+      const r = await this.requestApproval(room, from.msg, { title: `${NAME[agent]} хочет подключить ${NAME[to]}`, subtitle: short(prompt, 600) });
       if ((typeof r === 'object' ? r.decision : r) === 'deny') {
         return { isError: true, text: `Пользователь не разрешил подключать ${NAME[to]} для этого запроса. Продолжай сам.` };
       }

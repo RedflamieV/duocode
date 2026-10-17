@@ -3,6 +3,7 @@ import { PrefsContext } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { renderMarkdown } from './markdown.js';
 import { Attachments } from './attachments.jsx';
+import { DiffView } from './panels.jsx';
 
 export const NAME = { claude: 'Claude', codex: 'Codex' };
 export const peerOf = (a) => (a === 'claude' ? 'codex' : 'claude');
@@ -458,6 +459,121 @@ function duration(msg) {
   return s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`;
 }
 
+// Что агент поменял в файлах за этот ответ — с откатом и возвратом.
+function CheckpointBar({ msg, room }) {
+  const cp = msg.checkpoint;
+  const [open, setOpen] = useState(false);
+  const [file, setFile] = useState(null);
+  const [diff, setDiff] = useState('');
+  const [busy, setBusy] = useState(false);
+  const n = cp.files.length;
+  const word = n % 10 === 1 && n % 100 !== 11 ? 'файл' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'файла' : 'файлов';
+  const toggle = async (f) => {
+    if (file === f) return setFile(null);
+    setFile(f);
+    setDiff(await window.duo.checkpointDiff(room.id, msg.id, f));
+  };
+  const run = async (redo) => {
+    if (!redo && !confirm(`Вернуть ${n} ${word} к состоянию до этого ответа? Если после ответа в этих файлах что-то менялось, эти правки тоже пропадут.`)) return;
+    setBusy(true);
+    await window.duo.revert(room.id, msg.id, redo);
+    setBusy(false);
+  };
+  return (
+    <div class={`checkpoint ${cp.reverted ? 'reverted' : ''}`}>
+      <div class="checkpoint-row">
+        <button class="link-btn" onClick={() => setOpen(!open)}>
+          <Icon name={open ? 'down' : 'right'} size={13} />
+          {cp.reverted ? `Откачено: ${n} ${word}` : `Изменено ${n} ${word}`}
+        </button>
+        {cp.reverted ? (
+          <button class="chip-btn" disabled={busy} onClick={() => run(true)} title="Снова применить изменения этого ответа">
+            <Icon name="redo" size={13} /> Вернуть
+          </button>
+        ) : (
+          <button class="chip-btn" disabled={busy} onClick={() => run(false)} title="Вернуть файлы к состоянию до этого ответа">
+            <Icon name="undo" size={13} /> Откатить
+          </button>
+        )}
+      </div>
+      {open && (
+        <ul class="cp-files">
+          {cp.files.map((f) => (
+            <li key={f.path}>
+              <button class="link-btn" onClick={() => toggle(f.path)}>
+                <span class={`git-kind ${f.status === 'A' ? 'new' : f.status === 'D' ? 'deleted' : 'modified'}`}>{f.status}</span>
+                {f.path}
+              </button>
+              {file === f.path && <DiffView diff={diff} />}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Дуэль: оба агента решили задачу в своих копиях проекта, пользователь выбирает вариант.
+export function DuelCard({ card, room }) {
+  const [view, setView] = useState(null);
+  const pending = card.status === 'pending';
+  const apply = (choice) => window.duo.duelApply(room.id, card.id, choice);
+  return (
+    <div class="duel">
+      <div class="approval-head">
+        <Icon name="swap" size={16} />
+        <b>Сравнение решений</b>
+        <span class="muted small">
+          {card.status === 'running' ? 'агенты работают в своих копиях проекта…' : pending ? 'выберите вариант — он применится к проекту' : card.status === 'discarded' ? 'ничего не применено' : `применён вариант ${NAME[card.status.split(':')[1]]}`}
+        </span>
+      </div>
+      <div class="duel-cols">
+        {['claude', 'codex'].map((a) => {
+          const r = card.results[a] || {};
+          return (
+            <div class={`duel-col ${card.status === 'applied:' + a ? 'chosen' : ''}`} key={a}>
+              <div class="duel-col-head">
+                <Avatar agent={a} size={18} />
+                <b>{NAME[a]}</b>
+                <span class="muted small">{r.status === 'running' ? 'работает…' : r.files ? `${r.files.length} файл(ов)` : ''}</span>
+              </div>
+              {r.files && (
+                <ul class="cp-files">
+                  {r.files.slice(0, 12).map((f) => (
+                    <li key={f.path}>
+                      <span class={`git-kind ${f.status === 'A' ? 'new' : f.status === 'D' ? 'deleted' : 'modified'}`}>{f.status}</span> {f.path}
+                    </li>
+                  ))}
+                  {r.files.length > 12 && <li class="muted">и ещё {r.files.length - 12}</li>}
+                </ul>
+              )}
+              {r.diff && (
+                <button class="link small" onClick={() => setView(view === a ? null : a)}>
+                  {view === a ? 'Скрыть изменения' : 'Показать изменения'}
+                </button>
+              )}
+              {pending && r.files && r.files.length > 0 && (
+                <button class="btn small primary duel-apply" onClick={() => apply(a)}>
+                  Применить вариант {NAME[a]}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {view && card.results[view] && <DiffView diff={card.results[view].diff} />}
+      {card.error && <div class="error-box">{card.error}</div>}
+      {pending && (
+        <div class="approval-actions">
+          <button class="btn small ghost" onClick={() => apply('none')}>
+            Ничего не применять
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
   const prefs = useContext(PrefsContext);
   const [copied, setCopied] = useState(false);
@@ -475,6 +591,8 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
         <span class="msg-name">{NAME[msg.agent]}</span>
         {msg.requestedBy && !nested && <span class="badge">по запросу {NAME[msg.requestedBy]}</span>}
         {msg.plan && <span class="badge">план</span>}
+        {msg.duelId && <span class="badge" title="Работает в своей копии проекта">сравнение</span>}
+        {msg.pipeline && <span class="badge">{msg.pipeline}</span>}
         {msg.fork && <span class="badge" title="Агент был занят, поэтому запрос выполнен в ответвлении его сессии">параллельно</span>}
         <ModelTag msg={msg} />
         {running && <span class="working">работает…</span>}
@@ -492,6 +610,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
         )}
         {msg.warning && !msg.error && running && <div class="warn-line">{msg.warning}</div>}
       </div>
+      {msg.checkpoint && !running && !nested && <CheckpointBar msg={msg} room={room} />}
       {!running && !nested && (
         <div class="msg-actions">
           <button class="icon-btn" onClick={copy} title="Копировать ответ">
@@ -524,8 +643,11 @@ export function UserMessage({ msg }) {
           <i class={`dot ${t}`} key={t} />
         ))}
         {msg.plan && <span class="queued plan-tag">· сначала план</span>}
+        {msg.duel && <span class="queued plan-tag">· раздельно, для сравнения</span>}
+        {msg.pipeline && <span class="queued plan-tag">· {msg.pipeline}</span>}
         {msg.queued && msg.queued.length > 0 && <span class="queued">· в очереди у {msg.queued.map((a) => NAME[a]).join(' и ')}</span>}
       </div>
+      {msg.routed && <div class="routed">{msg.routed}</div>}
       <div class="bubble">{msg.text}</div>
       {msg.attachments && msg.attachments.length > 0 && <Attachments items={msg.attachments} />}
     </div>

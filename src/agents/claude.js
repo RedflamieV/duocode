@@ -98,7 +98,7 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   const ev = new EventEmitter();
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   args.push('--mcp-config', mcpConfigPath, '--append-system-prompt-file', systemPromptPath);
-  args.push('--allowedTools', 'mcp__duo__ask_codex');
+  args.push('--allowedTools', 'mcp__duo__ask_codex', 'mcp__duo__remember');
   // в режиме плана Claude сам вызывает ExitPlanMode, а DuoCode показывает план на утверждение
   if (plan) args.push('--permission-mode', 'plan', '--permission-prompt-tool', 'mcp__duo__approve');
   else if (mode === 'full') args.push('--permission-mode', 'bypassPermissions');

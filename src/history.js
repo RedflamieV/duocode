@@ -246,4 +246,68 @@ function latestCodexRateLimits() {
   return null;
 }
 
-module.exports = { allSessions, claudeToday, codexToday, latestCodexRateLimits };
+// ---------- Статистика по дням ----------
+
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Токены по дням за последние `days` дней: { 'YYYY-MM-DD': { claude, codex } }.
+// Читает файлы асинхронно и по одному, чтобы не подвешивать окно.
+async function dailyUsage(days = 14) {
+  const since = Date.now() - days * 86400000;
+  const out = {};
+  for (let i = 0; i < days; i++) out[dayKey(Date.now() - i * 86400000)] = { claude: 0, codex: 0 };
+  const add = (ts, agent, n) => {
+    const k = dayKey(ts);
+    if (out[k]) out[k][agent] += n;
+  };
+
+  const seen = new Set();
+  for (const { file, mtime } of listFiles(path.join(claudeDir(), 'projects'), '.jsonl', 1)) {
+    if (mtime < since) continue;
+    let text;
+    try {
+      text = await fs.promises.readFile(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const e of jsonLines(text)) {
+      if (e.type !== 'assistant' || !e.message || !e.message.usage || !e.timestamp) continue;
+      const ts = Date.parse(e.timestamp);
+      if (ts < since) continue;
+      const key = `${e.message.id}:${e.requestId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const u = e.message.usage;
+      add(ts, 'claude', (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0));
+    }
+  }
+
+  for (const { file, mtime } of listFiles(path.join(codexDir(), 'sessions'), '.jsonl', 3)) {
+    if (mtime < since) continue;
+    let text;
+    try {
+      text = await fs.promises.readFile(file, 'utf8');
+    } catch {
+      continue;
+    }
+    let lastTotal = -1;
+    for (const e of jsonLines(text)) {
+      const p = e.payload || {};
+      if (e.type !== 'event_msg' || p.type !== 'token_count' || !p.info || !e.timestamp) continue;
+      const ts = Date.parse(e.timestamp);
+      if (ts < since) continue;
+      const total = p.info.total_token_usage && p.info.total_token_usage.total_tokens;
+      if (total === lastTotal) continue;
+      lastTotal = total;
+      add(ts, 'codex', (p.info.last_token_usage && p.info.last_token_usage.total_tokens) || 0);
+    }
+  }
+  return Object.entries(out)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([day, v]) => ({ day, ...v }));
+}
+
+module.exports = { allSessions, claudeToday, codexToday, latestCodexRateLimits, dailyUsage };
