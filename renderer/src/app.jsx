@@ -1232,11 +1232,12 @@ function TelegramTab({ settings, onSaved }) {
     duo.remoteStatus().then(setRemote);
     return duo.onRemote(setRemote);
   }, []);
+  const [customUrl, setCustomUrl] = useState(t.customUrl || '');
   const REMOTE = {
     off: 'Выключено',
     downloading: `Скачиваю туннель Cloudflare${remote.progress ? ` — ${remote.progress}%` : '…'}`,
     starting: 'Поднимаю туннель…',
-    ready: 'Работает. В чате с ботом появилась кнопка «DuoCode» (или отправьте боту /app).',
+    ready: `Работает: ${remote.url}. В чате с ботом есть кнопка «DuoCode» (или отправьте /app). Если на телефоне не открывается — смените туннель.`,
     error: `Ошибка: ${remote.error}`,
   };
   const [status, setStatus] = useState(null);
@@ -1304,6 +1305,13 @@ function TelegramTab({ settings, onSaved }) {
           {t.token && !t.userId && !t.suggestedId && <span class="warn"> Пока ID не указан, бот никого не слушается.</span>}
         </div>
       </div>
+      <div class="remote-box chat-control">
+        <b>Управление прямо в чате с ботом</b>
+        <p class="field-hint">
+          Работает всегда, без туннелей: <code>/chats</code> — выбрать чат, <code>/new</code> — новый, дальше просто пишите задачу (можно прислать скриншот). <code>/to</code> — кому писать,{' '}
+          <code>/plan</code>, <code>/stop</code>, <code>/limits</code>, <code>/help</code>. Ход работы агента виден в одном обновляющемся сообщении.
+        </p>
+      </div>
       <div class="remote-box">
         <Switch
           checked={!!t.remote}
@@ -1312,13 +1320,42 @@ function TelegramTab({ settings, onSaved }) {
           hint="Полноценный интерфейс прямо в Telegram: чаты, задачи агентам, подтверждения, лимиты"
         />
         {t.remote && (
-          <div class={`field-hint ${remote.state === 'error' ? 'warn' : ''}`}>
-            {!t.userId ? <span class="warn">Сначала укажите свой Telegram ID.</span> : REMOTE[remote.state] || remote.state}
-          </div>
+          <>
+            <div class="field">
+              <label>Туннель</label>
+              <Segmented
+                value={t.tunnel || 'cloudflare'}
+                onChange={(v) => save({ tunnel: v })}
+                options={[
+                  { id: 'cloudflare', name: 'Cloudflare' },
+                  { id: 'localhostrun', name: 'localhost.run' },
+                  { id: 'custom', name: 'Свой адрес' },
+                ]}
+              />
+              <div class="field-hint">
+                {(t.tunnel || 'cloudflare') === 'cloudflare' && 'Бесплатный туннель Cloudflare. В России Cloudflare часто ограничен провайдерами — если приложение не открывается, попробуйте localhost.run или VPN на телефоне.'}
+                {t.tunnel === 'localhostrun' && 'Бесплатный SSH-туннель localhost.run: использует встроенный в Windows ssh, ничего не скачивает. Адрес вида *.lhr.life.'}
+                {t.tunnel === 'custom' && (
+                  <>
+                    Поднимите свой туннель (ngrok, Tuna, Tailscale Funnel и т. п.) на <code>http://127.0.0.1:{remote.port || 47821}</code> и вставьте его https-адрес:
+                    <div class="field-row" style={{ marginTop: '6px' }}>
+                      <input value={customUrl} placeholder="https://…" onInput={(e) => setCustomUrl(e.target.value.trim())} spellcheck={false} />
+                      <button class="btn small primary" disabled={customUrl === (t.customUrl || '')} onClick={() => save({ customUrl })}>
+                        Сохранить
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            <div class={`field-hint ${remote.state === 'error' ? 'warn' : ''}`}>
+              {!t.userId ? <span class="warn">Сначала укажите свой Telegram ID.</span> : REMOTE[remote.state] || remote.state}
+            </div>
+          </>
         )}
         <p class="field-hint">
-          Телефон связывается с компьютером через бесплатный зашифрованный туннель Cloudflare (DuoCode скачает его сам, ~40 МБ). Адрес туннеля случайный и меняется при каждом запуске, а
-          каждый запрос проверяется по подписи Telegram и вашему ID — без них данные не отдаются. Компьютер с DuoCode должен быть включён.
+          Мини-приложению нужен туннель от интернета до компьютера. Каким бы он ни был, каждый запрос проверяется по подписи Telegram и вашему ID — без них данные не отдаются. Компьютер с
+          DuoCode должен быть включён.
         </p>
       </div>
       <Switch checked={t.notifyFinish !== false} onChange={(v) => save({ notifyFinish: v })} label="Агент закончил работу" hint="С кратким ответом. Ответьте на сообщение, чтобы продолжить чат" />

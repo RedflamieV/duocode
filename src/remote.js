@@ -48,14 +48,19 @@ class RemoteServer extends EventEmitter {
     this.port = null;
   }
 
-  start() {
+  // Постоянный порт 47821 удобен для своего туннеля; если занят — любой свободный.
+  start(preferred = 47821) {
     if (this.server) return Promise.resolve(this.port);
     this.server = http.createServer((req, res) => this.route(req, res).catch((err) => this.json(res, 500, { error: err.message })));
     return new Promise((resolve) => {
-      this.server.listen(0, '127.0.0.1', () => {
-        this.port = this.server.address().port;
-        resolve(this.port);
-      });
+      const listen = (port) => {
+        this.server.once('error', (err) => (err.code === 'EADDRINUSE' && port ? listen(0) : resolve(null)));
+        this.server.listen(port, '127.0.0.1', () => {
+          this.port = this.server.address().port;
+          resolve(this.port);
+        });
+      };
+      listen(preferred);
     });
   }
 
@@ -190,24 +195,48 @@ class Tunnel extends EventEmitter {
     return bin;
   }
 
-  async start(port) {
+  // provider: cloudflare | localhostrun | custom (адрес задаёт пользователь, туннель он поднимает сам)
+  async start(port, provider = 'cloudflare', customUrl = '') {
     this.wanted = true;
-    if (this.proc) return;
-    let bin;
-    try {
-      bin = await this.ensureBinary();
-    } catch (err) {
-      this.emit('status', { state: 'error', error: err.message });
-      return;
+    if (this.proc && this.provider === provider) return;
+    if (this.proc) this.stop();
+    this.wanted = true;
+    this.provider = provider;
+    if (provider === 'custom') {
+      const url = customUrl.trim().replace(/\/+$/, '');
+      if (!/^https:\/\//.test(url)) return this.emit('status', { state: 'error', error: 'Укажите адрес, начинающийся с https://' });
+      this.url = url;
+      return this.emit('status', { state: 'ready', url });
     }
-    if (!this.wanted) return;
-    this.emit('status', { state: 'starting' });
-    const proc = spawn(bin, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], { windowsHide: true });
+    let proc;
+    let pattern;
+    if (provider === 'localhostrun') {
+      // SSH-туннель localhost.run: ssh есть в Windows 10/11, macOS и Linux, скачивать ничего не нужно
+      this.emit('status', { state: 'starting' });
+      pattern = /https:\/\/[a-z0-9-]+\.(lhr\.life|localhost\.run)/;
+      proc = spawn(
+        'ssh',
+        ['-T', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes', '-R', `80:127.0.0.1:${port}`, 'nokey@localhost.run'],
+        { windowsHide: true },
+      );
+    } else {
+      let bin;
+      try {
+        bin = await this.ensureBinary();
+      } catch (err) {
+        this.emit('status', { state: 'error', error: err.message });
+        return;
+      }
+      if (!this.wanted) return;
+      this.emit('status', { state: 'starting' });
+      pattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+      proc = spawn(bin, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], { windowsHide: true });
+    }
     this.proc = proc;
     let log = '';
     const onData = (chunk) => {
       log = (log + chunk.toString()).slice(-4000);
-      const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(log);
+      const m = pattern.exec(log);
       if (m && m[0] !== this.url) {
         this.url = m[0];
         // адрес выдан, но DNS у Cloudflare доходит до него за несколько секунд
@@ -224,7 +253,7 @@ class Tunnel extends EventEmitter {
       if (!this.wanted) return this.emit('status', { state: 'off' });
       const reason = (log.match(/(ERR|failed)[^\n]*/g) || []).pop() || 'туннель остановился';
       this.emit('status', { state: 'error', error: `${reason}. Перезапуск через 15 секунд…` });
-      setTimeout(() => this.wanted && this.start(port), 15000);
+      setTimeout(() => this.wanted && this.start(port, provider, customUrl), 15000);
     });
   }
 

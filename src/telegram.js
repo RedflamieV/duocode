@@ -17,6 +17,7 @@ class Telegram extends EventEmitter {
     this.bot = null;
     this.rooms = new Map(); // message_id -> roomId (для ответов на сообщения бота)
     this.appUrl = null; // адрес мини-приложения, когда туннель поднят
+    this.base = process.env.DUO_TELEGRAM_API || 'https://api.telegram.org'; // подмена — только для тестов
     this.status = 'off';
   }
 
@@ -33,7 +34,7 @@ class Telegram extends EventEmitter {
   }
 
   async api(method, params = {}) {
-    const res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
+    const res = await fetch(`${this.base}/bot${this.token}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -56,6 +57,21 @@ class Telegram extends EventEmitter {
     try {
       const me = await this.api('getMe');
       this.bot = me.username;
+      if (this.userId) {
+        await this.api('setMyCommands', {
+          scope: { type: 'chat', chat_id: Number(this.userId) },
+          commands: [
+            { command: 'chats', description: 'Выбрать чат' },
+            { command: 'new', description: 'Новый чат в проекте' },
+            { command: 'to', description: 'Кому писать: Claude, Codex, оба, авто' },
+            { command: 'plan', description: 'Задача в режиме «сначала план»' },
+            { command: 'stop', description: 'Остановить агентов' },
+            { command: 'limits', description: 'Лимиты' },
+            { command: 'app', description: 'Мини-приложение' },
+            { command: 'help', description: 'Как пользоваться' },
+          ],
+        }).catch(() => {});
+      }
       this.setStatus(this.userId ? 'linked' : 'needId');
     } catch (err) {
       return this.setStatus('error', err.message);
@@ -111,20 +127,17 @@ class Telegram extends EventEmitter {
         return;
       }
       if (!this.isOwner(m.from, m.chat)) return this.stranger(m.from, m.chat, `сообщение «${clip(m.text || '(не текст)', 80)}»`);
-      if (/^\/app/.test(m.text || '')) {
-        if (this.appUrl) await this.sendApp('📱 Управление DuoCode на компьютере:');
-        else await this.api('sendMessage', { chat_id: this.userId, text: 'Мини-приложение выключено. Включите его в DuoCode → Настройки → Telegram.' });
+      const text = m.text || m.caption || '';
+      const replyRoom = m.reply_to_message && this.rooms.get(m.reply_to_message.message_id);
+      // фото и документы — вложения к задаче
+      const photo = m.photo && m.photo.length ? m.photo[m.photo.length - 1] : null;
+      const file = photo ? { id: photo.file_id, name: `photo-${m.message_id}.jpg` } : m.document ? { id: m.document.file_id, name: m.document.file_name || `file-${m.message_id}` } : null;
+      const cmd = /^\/(\w+)(?:@\w+)?\s*([\s\S]*)$/.exec(text);
+      if (cmd && !file) {
+        this.emit('command', { name: cmd[1].toLowerCase(), args: cmd[2].trim() });
         return;
       }
-      if (/^\/start/.test(m.text || '')) {
-        await this.api('sendMessage', { chat_id: this.userId, text: '✅ DuoCode подключён. Сюда будут приходить уведомления и запросы подтверждений. Чтобы написать агентам, ответьте (Reply) на сообщение нужного чата.' });
-        return;
-      }
-      const reply = m.reply_to_message && this.rooms.get(m.reply_to_message.message_id);
-      if (reply && m.text) this.emit('reply', { roomId: reply, text: m.text });
-      else if (m.text && !/^\/start/.test(m.text)) {
-        await this.api('sendMessage', { chat_id: chat, text: 'Чтобы написать агентам, ответьте (Reply) на сообщение из нужного чата.' });
-      }
+      if (text || file) this.emit('text', { text, file, roomId: replyRoom || null });
       return;
     }
     if (u.callback_query) {
@@ -133,12 +146,57 @@ class Telegram extends EventEmitter {
         await this.api('answerCallbackQuery', { callback_query_id: q.id, text: 'Нет доступа' }).catch(() => {});
         return this.stranger(q.from, q.message && q.message.chat, 'нажатие кнопки');
       }
-      const [kind, roomId, partId, value] = (q.data || '').split('|');
-      this.emit(kind === 'a' ? 'approval' : 'answer', { roomId, partId, value });
-      await this.api('answerCallbackQuery', { callback_query_id: q.id, text: 'Готово' }).catch(() => {});
-      const label = kind === 'a' ? (value === 'deny' ? '❌ Отклонено' : '✅ Разрешено') : `✅ Ответ: ${value}`;
-      await this.api('editMessageReplyMarkup', { chat_id: this.userId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'x' }]] } }).catch(() => {});
+      const [kind, a, b, c] = (q.data || '').split('|');
+      if (kind === 'a' || kind === 'q') {
+        this.emit(kind === 'a' ? 'approval' : 'answer', { roomId: a, partId: b, value: c });
+        await this.api('answerCallbackQuery', { callback_query_id: q.id, text: 'Готово' }).catch(() => {});
+        const label = kind === 'a' ? (c === 'deny' ? '❌ Отклонено' : '✅ Разрешено') : '✅ Ответ отправлен';
+        await this.api('editMessageReplyMarkup', { chat_id: this.userId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'x' }]] } }).catch(() => {});
+        return;
+      }
+      await this.api('answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
+      if (kind === 'c') this.emit('button', { action: a, value: b, messageId: q.message.message_id });
     }
+  }
+
+  // ---------- Помощники для режима «управление в чате» ----------
+
+  say(html, buttons) {
+    if (!this.token || !this.userId) return Promise.resolve(null);
+    return this.api('sendMessage', {
+      chat_id: this.userId,
+      text: clip(html, 4000),
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
+    }).catch(() => null);
+  }
+
+  edit(messageId, html, buttons) {
+    return this.api('editMessageText', {
+      chat_id: this.userId,
+      message_id: messageId,
+      text: clip(html, 4000),
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
+    }).catch(() => null);
+  }
+
+  remove(messageId) {
+    return this.api('deleteMessage', { chat_id: this.userId, message_id: messageId }).catch(() => null);
+  }
+
+  typing() {
+    return this.api('sendChatAction', { chat_id: this.userId, action: 'typing' }).catch(() => null);
+  }
+
+  // Скачивает присланный файл и возвращает его байты.
+  async download(fileId) {
+    const f = await this.api('getFile', { file_id: fileId });
+    const res = await fetch(`${this.base}/file/bot${this.token}/${f.file_path}`, { signal: AbortSignal.timeout(60000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
   }
 
   // Кнопка «DuoCode» слева от поля ввода в чате с ботом открывает мини-приложение.
@@ -147,7 +205,6 @@ class Telegram extends EventEmitter {
     if (!this.token || !this.userId) return;
     const menu = url ? { type: 'web_app', text: 'DuoCode', web_app: { url } } : { type: 'default' };
     await this.api('setChatMenuButton', { chat_id: Number(this.userId), menu_button: menu }).catch(() => {});
-    await this.api('setMyCommands', { commands: [{ command: 'app', description: 'Открыть DuoCode' }], scope: { type: 'chat', chat_id: Number(this.userId) } }).catch(() => {});
   }
 
   appButton(roomId) {

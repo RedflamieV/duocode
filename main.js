@@ -36,7 +36,7 @@ const APPEARANCE = {
   sendKey: 'enter',
   showCost: true,
 };
-const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true, remote: false };
+const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true, remote: false, tunnel: 'cloudflare', customUrl: '', activeRoom: '', target: 'both' };
 const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true };
 
 const PIPELINES = [
@@ -488,13 +488,186 @@ function setupTelegram() {
       }
     }
   });
-  tg.on('reply', ({ roomId, text }) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    const lastUser = [...room.messages].reverse().find((m) => m.role === 'user');
-    rooms.send(roomId, { text, targets: lastUser ? lastUser.targets : ['claude', 'codex'] });
-  });
+  tg.on('command', (c) => botCommand(c).catch(() => {}));
+  tg.on('text', (t) => botText(t).catch((err) => tg.say(`⚠️ ${esc(err.message)}`)));
+  tg.on('button', (b) => botButton(b).catch(() => {}));
   tg.configure(settings.telegram);
+}
+
+// ---------- Управление прямо в чате с ботом (работает без туннеля) ----------
+
+const TARGET_NAME = { claude: 'Claude', codex: 'Codex', both: 'Claude и Codex', auto: 'Авто (у кого больше лимита)' };
+const followed = new Map(); // roomId -> время, до которого показываем ход работы в Telegram
+const progress = new Map(); // id сообщения агента -> { tgId, text, at, timer }
+
+function setBot(patch) {
+  settings.telegram = { ...settings.telegram, ...patch };
+  saveSettings();
+}
+
+function activeRoom() {
+  const id = settings.telegram.activeRoom;
+  return id && rooms.get(id) ? rooms.get(id) : null;
+}
+
+function targetButtons() {
+  const t = settings.telegram.target || 'both';
+  return [
+    ['claude', 'codex', 'both', 'auto'].map((k) => ({
+      text: `${t === k ? '● ' : ''}${{ claude: 'Claude', codex: 'Codex', both: 'Оба', auto: 'Авто' }[k]}`,
+      callback_data: `c|to|${k}`,
+    })),
+  ];
+}
+
+const HELP =
+  '<b>Как управлять DuoCode из Telegram</b>\n\n' +
+  '• /chats — выбрать чат, /new — новый чат в проекте\n' +
+  '• Дальше просто пишите задачу — она уйдёт агентам в выбранный чат. Можно прислать скриншот или файл.\n' +
+  '• /to — кому писать: Claude, Codex, обоим или «авто»\n' +
+  '• /plan задача — сначала план, потом выполнение\n' +
+  '• /stop — остановить, /limits — лимиты\n' +
+  '• /compact, /clear, /review, /init — команды агентов\n\n' +
+  'Ход работы показывается в одном сообщении, которое обновляется. Подтверждения и вопросы приходят с кнопками.';
+
+async function botCommand({ name, args }) {
+  const room = activeRoom();
+  switch (name) {
+    case 'start':
+    case 'help':
+      return tg.say(HELP + (room ? `\n\nСейчас выбран чат «${esc(room.title)}».` : '\n\nНачните с /chats или /new.'));
+    case 'chats': {
+      const list = rooms.list().slice(0, 10);
+      if (!list.length) return tg.say('Чатов пока нет. Создайте: /new');
+      return tg.say(
+        '<b>Выберите чат</b>',
+        list.map((r) => [{ text: `${r.id === settings.telegram.activeRoom ? '● ' : ''}${r.running.claude || r.running.codex ? '⏳ ' : ''}${clip(r.title, 48)}`, callback_data: `c|room|${r.id}` }]),
+      );
+    }
+    case 'new': {
+      if (!settings.projects.length) return tg.say('Сначала откройте папку проекта в DuoCode на компьютере.');
+      return tg.say('<b>В каком проекте?</b>', settings.projects.slice(0, 10).map((p, i) => [{ text: path.basename(p) || p, callback_data: `c|proj|${i}` }]));
+    }
+    case 'to':
+      return tg.say(`Сейчас пишете: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>`, targetButtons());
+    case 'stop':
+      if (!room) return tg.say('Чат не выбран: /chats');
+      rooms.stop(room.id);
+      return tg.say(`⏹ Остановлено в «${esc(room.title)}»`);
+    case 'limits': {
+      const line = (name, d) =>
+        !d || !d.ok ? `<b>${name}</b>: ${esc((d && d.error) || 'нет данных')}` : `<b>${name}</b>\n` + d.windows.map((w) => `  ${esc(w.label)}: ${Math.round(w.percent)}% · сброс ${new Date(w.resetsAt).toLocaleString()}`).join('\n');
+      return tg.say(`${line('Claude', limits.claude)}\n\n${line('Codex', limits.codex)}`);
+    }
+    case 'app':
+      if (tg.appUrl) return tg.sendApp('📱 Мини-приложение DuoCode (если не открывается — у вашего провайдера может быть заблокирован туннель, пользуйтесь управлением прямо в этом чате):');
+      return tg.say('Мини-приложение выключено. Всё можно делать прямо здесь — /help');
+    case 'plan':
+      if (!args) return tg.say('Напишите задачу после команды: /plan добавь авторизацию');
+      return botText({ text: args, plan: true });
+    default:
+      // команды агентов (/compact, /review…) уходят в выбранный чат как есть
+      return botText({ text: `/${name}${args ? ' ' + args : ''}` });
+  }
+}
+
+async function botText({ text, file, roomId, plan = false }) {
+  const room = roomId ? rooms.get(roomId) : activeRoom();
+  if (!room) return tg.say('Сначала выберите чат: /chats — или создайте новый: /new');
+  const attachments = [];
+  if (file) {
+    const bytes = await tg.download(file.id);
+    const dir = path.join(app.getPath('userData'), 'attachments');
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, `${Date.now()}-${file.name.replace(/[^\w.\-а-яё]/gi, '_')}`);
+    fs.writeFileSync(p, bytes);
+    attachments.push(describeFile(p));
+  }
+  const t = settings.telegram.target || 'both';
+  const targets = t === 'both' ? ['claude', 'codex'] : [t];
+  followed.set(room.id, Date.now() + 6 * 3600 * 1000);
+  if (roomId && roomId !== settings.telegram.activeRoom) setBot({ activeRoom: roomId });
+  rooms.send(room.id, { text: text || 'Посмотри вложение.', targets, attachments, plan });
+  tg.typing();
+}
+
+async function botButton({ action, value, messageId }) {
+  if (action === 'room' || action === 'proj') {
+    let room;
+    if (action === 'proj') {
+      const cwd = settings.projects[Number(value)];
+      if (!cwd) return;
+      room = rooms.create({ cwd });
+    } else room = rooms.get(value);
+    if (!room) return tg.say('Чат не найден');
+    setBot({ activeRoom: room.id });
+    followed.set(room.id, Date.now() + 6 * 3600 * 1000);
+    const last = [...room.messages].reverse().find((m) => m.role === 'agent' && !m.parentId && m.finalText);
+    const tail = last ? `\n\nПоследний ответ ${last.agent === 'claude' ? 'Claude' : 'Codex'}:\n<i>${esc(clip(last.finalText, 600))}</i>` : '';
+    return tg.edit(messageId, `✅ Чат «<b>${esc(room.title)}</b>» (${esc(path.basename(room.cwd))}).\nПишите задачу — она уйдёт: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>.${tail}`, targetButtons());
+  }
+  if (action === 'to') {
+    setBot({ target: value });
+    return tg.edit(messageId, `Теперь пишете: <b>${TARGET_NAME[value]}</b>`, targetButtons());
+  }
+  if (action === 'stop') {
+    rooms.stop(value);
+    return tg.say('⏹ Остановлено');
+  }
+}
+
+// Ход работы агента — одно сообщение, которое обновляется раз в несколько секунд.
+function stepLine(p) {
+  if (p.kind === 'thinking') return '💭 размышляет';
+  if (p.kind === 'delegate') return `🔁 подключил ${p.to === 'claude' ? 'Claude' : 'Codex'}`;
+  if (p.kind === 'approval') return p.status === 'pending' ? '🛡 ждёт подтверждения' : null;
+  if (p.kind === 'question') return p.status === 'pending' ? '❓ ждёт ответа' : null;
+  if (p.kind !== 'tool') return null;
+  if (p.icon === 'terminal') return `▸ <code>${esc(clip((p.command || '').split('\n')[0], 80))}</code>`;
+  return `▸ ${esc(p.title)}${p.subtitle ? `: ${esc(clip(p.subtitle, 60))}` : ''}`;
+}
+
+function trackProgress(roomId, msgs) {
+  const until = followed.get(roomId);
+  if (!until || until < Date.now() || !settings.telegram.token || !settings.telegram.userId) return;
+  for (const m of msgs) {
+    if (m.role !== 'agent' || m.parentId) continue;
+    const who = m.agent === 'claude' ? 'Claude' : 'Codex';
+    let st = progress.get(m.id);
+    if (m.status !== 'running') {
+      if (st) {
+        clearTimeout(st.timer);
+        progress.delete(m.id);
+        if (st.tgId) tg.remove(st.tgId);
+      }
+      continue;
+    }
+    const steps = m.parts.map(stepLine).filter(Boolean).slice(-6);
+    const secs = Math.round((Date.now() - m.ts) / 1000);
+    const draft = m.draft && m.draftKind !== 'thinking' ? `\n\n<i>${esc(clip(m.draft.slice(-300), 300))}</i>` : '';
+    const text = `⏳ <b>${who}</b> работает · ${secs < 60 ? secs + ' с' : Math.floor(secs / 60) + ' мин'}\n${steps.join('\n')}${draft}`;
+    const buttons = [[{ text: '⏹ Остановить', callback_data: `c|stop|${roomId}` }]];
+    if (!st) {
+      st = { tgId: null, text: '', at: 0, timer: null };
+      progress.set(m.id, st);
+      tg.say(text, buttons).then((r) => {
+        if (r && progress.get(m.id) === st) st.tgId = r.message_id;
+        else if (r) tg.remove(r.message_id);
+      });
+      st.text = text;
+      st.at = Date.now();
+      continue;
+    }
+    st.next = text;
+    if (!st.timer) {
+      st.timer = setTimeout(() => {
+        st.timer = null;
+        if (!progress.has(m.id) || !st.tgId || st.next === st.text) return;
+        st.text = st.next;
+        tg.edit(st.tgId, st.text, buttons);
+      }, 3500);
+    }
+  }
 }
 
 function telegramAttention(room, msg, part) {
@@ -527,11 +700,13 @@ function telegramAttention(room, msg, part) {
 }
 
 function telegramFinished(room, msg) {
-  if (!settings.telegram.notifyFinish || msg.parentId || msg.duelId) return;
+  if (msg.parentId || msg.duelId) return;
+  const isFollowed = (followed.get(room.id) || 0) > Date.now();
+  if (!settings.telegram.notifyFinish && !isFollowed) return;
   const who = msg.agent === 'claude' ? 'Claude' : 'Codex';
   const icon = msg.status === 'error' ? '⚠️' : msg.status === 'stopped' ? '⏹' : '✅';
   const text = msg.error ? `Ошибка: ${msg.error}` : msg.finalText || '';
-  tg.send(`${icon} <b>${who}</b> · ${esc(room.title)}\n\n${esc(clip(text, 1500))}\n\n<i>Ответьте на это сообщение, чтобы написать в чат.</i>`, { roomId: room.id });
+  tg.send(`${icon} <b>${who}</b> · ${esc(room.title)}\n\n${esc(clip(text, isFollowed ? 3500 : 1500))}`, { roomId: room.id });
 }
 
 // ---------- Мини-приложение Telegram ----------
@@ -575,7 +750,7 @@ async function applyRemote() {
   const t = settings.telegram;
   if (t.remote && t.token && t.userId) {
     const port = await remote.start();
-    tunnel.start(port);
+    tunnel.start(port, t.tunnel || 'cloudflare', t.customUrl || '');
   } else {
     tunnel.stop();
   }
@@ -794,7 +969,7 @@ function bindIpc() {
   // Telegram
   ipcMain.handle('telegram:status', () => ({ status: tg.status, bot: tg.bot, chatId: tg.chatId }));
   ipcMain.handle('telegram:test', () => tg.send('👋 Тестовое сообщение от DuoCode. Уведомления работают.'));
-  ipcMain.handle('remote:status', () => remoteStatus);
+  ipcMain.handle('remote:status', () => ({ ...remoteStatus, port: remote && remote.port }));
 
   ipcMain.handle('settings:get', () => settings);
   ipcMain.handle('settings:set', (_e, patch) => {
@@ -859,6 +1034,7 @@ app.whenReady().then(async () => {
     notify(`${room.title}: ${part.kind === 'question' ? 'вопрос агента' : 'нужно подтверждение'}`, part.title || (part.questions && part.questions[0] && part.questions[0].question) || '', room.id);
     telegramAttention(room, msg, part);
   });
+  rooms.on('messages', (roomId, msgs) => trackProgress(roomId, msgs));
   rooms.on('memory', (cwd) => win && !win.isDestroyed() && win.webContents.send('memory', cwd));
   rooms.on('finished', (room, msg) => {
     if (msg.parentId) return;
