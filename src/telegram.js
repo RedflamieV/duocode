@@ -2,11 +2,15 @@
 // Работает через long polling (getUpdates), сервер не нужен.
 // Безопасность: бот слушается только одного аккаунта — по Telegram ID из настроек, и только в личном чате.
 // Всё остальное игнорируется, а о попытках чужих аккаунтов DuoCode сообщает владельцу.
+const fs = require('fs');
 const { EventEmitter } = require('events');
 const { esc, plain } = require('./tgformat');
 
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const LIMIT = 4096;
+// Сообщения старше этого пришли, пока DuoCode был выключен или компьютер спал (Telegram хранит их до суток).
+// Такие задачи не запускаем сами — иначе после включения всё накопленное налетело бы разом.
+const STALE_SEC = 120;
 
 class Telegram extends EventEmitter {
   constructor() {
@@ -20,6 +24,28 @@ class Telegram extends EventEmitter {
     this.appUrl = null; // адрес мини-приложения, когда туннель поднят
     this.base = process.env.DUO_TELEGRAM_API || 'https://api.telegram.org'; // подмена — только для тестов
     this.status = 'off';
+    this.backlog = []; // задачи, присланные, пока DuoCode был недоступен
+    this.backlogTimer = null;
+    this.roomsFile = null;
+  }
+
+  // Связь «сообщение бота → чат» переживает перезапуск: ответ (Reply) на старое уведомление
+  // после включения компьютера уйдёт в тот же чат, а не в выбранный сейчас.
+  persistRooms(file) {
+    this.roomsFile = file;
+    try {
+      this.rooms = new Map(JSON.parse(fs.readFileSync(file, 'utf8')));
+    } catch {}
+  }
+
+  rememberRoom(messageId, roomId) {
+    this.rooms.set(messageId, roomId);
+    if (this.rooms.size > 500) this.rooms.delete(this.rooms.keys().next().value);
+    if (!this.roomsFile || this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      fs.promises.writeFile(this.roomsFile, JSON.stringify([...this.rooms])).catch(() => {});
+    }, 2000);
   }
 
   configure({ token, userId }) {
@@ -148,6 +174,17 @@ class Telegram extends EventEmitter {
       const photo = m.photo && m.photo.length ? m.photo[m.photo.length - 1] : null;
       const file = photo ? { id: photo.file_id, name: `photo-${m.message_id}.jpg` } : m.document ? { id: m.document.file_id, name: m.document.file_name || `file-${m.message_id}` } : null;
       const cmd = /^\/(\w+)(?:@\w+)?\s*([\s\S]*)$/.exec(text);
+      if (Date.now() / 1000 - m.date > STALE_SEC) {
+        // пришло, пока DuoCode был выключен: копим и спрашиваем владельца одним сообщением
+        this.backlog.push(cmd && !file ? { command: cmd[1].toLowerCase(), date: m.date } : { text, file, roomId: replyRoom || null, date: m.date });
+        clearTimeout(this.backlogTimer);
+        this.backlogTimer = setTimeout(() => {
+          const items = this.backlog;
+          this.backlog = [];
+          if (items.length) this.emit('backlog', items);
+        }, 2000);
+        return;
+      }
       if (cmd && !file) {
         this.emit('command', { name: cmd[1].toLowerCase(), args: cmd[2].trim() });
         return;
@@ -163,9 +200,11 @@ class Telegram extends EventEmitter {
       }
       const [kind, a, b, c] = (q.data || '').split('|');
       if (kind === 'a' || kind === 'q') {
-        this.emit(kind === 'a' ? 'approval' : 'answer', { roomId: a, partId: b, value: c });
-        await this.api('answerCallbackQuery', { callback_query_id: q.id, text: 'Готово' }).catch(() => {});
-        const label = kind === 'a' ? (c === 'deny' ? '❌ Отклонено' : '✅ Разрешено') : '✅ Ответ отправлен';
+        // слушатель ставит ok = false, если агент уже не ждёт ответа (например, DuoCode перезапускался)
+        const res = { ok: false };
+        this.emit(kind === 'a' ? 'approval' : 'answer', { roomId: a, partId: b, value: c, res });
+        await this.api('answerCallbackQuery', { callback_query_id: q.id, text: res.ok ? 'Готово' : 'Запрос устарел: агент уже не ждёт ответа' }).catch(() => {});
+        const label = !res.ok ? '⌛ Устарело' : kind === 'a' ? (c === 'deny' ? '❌ Отклонено' : '✅ Разрешено') : '✅ Ответ отправлен';
         await this.api('editMessageReplyMarkup', { chat_id: this.userId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'x' }]] } }).catch(() => {});
         return;
       }
@@ -240,10 +279,7 @@ class Telegram extends EventEmitter {
           return rows.length ? { inline_keyboard: rows } : undefined;
         })(),
       });
-      if (roomId) {
-        this.rooms.set(msg.message_id, roomId);
-        if (this.rooms.size > 500) this.rooms.delete(this.rooms.keys().next().value);
-      }
+      if (roomId) this.rememberRoom(msg.message_id, roomId);
       return msg;
     } catch (err) {
       const hint = /chat not found|bot can't initiate|blocked/i.test(err.message) ? 'Откройте своего бота в Telegram и нажмите «Старт».' : err.message;

@@ -495,18 +495,22 @@ function setupTelegram() {
     if (Notification.isSupported()) new Notification({ title: 'DuoCode: чужой аккаунт написал вашему боту', body: `${who} (ID ${id}): ${what}. Проигнорировано.` }).show();
   });
   tg.on('status', (s) => win && !win.isDestroyed() && win.webContents.send('telegram', s));
-  tg.on('approval', ({ roomId, partId, value }) => rooms.respondApproval(roomId, partId, value));
-  tg.on('answer', ({ roomId, partId, value }) => {
+  tg.on('approval', ({ roomId, partId, value, res }) => {
+    res.ok = rooms.respondApproval(roomId, partId, value);
+  });
+  tg.on('answer', ({ roomId, partId, value, res }) => {
     const room = rooms.get(roomId);
     for (const m of (room && room.messages) || []) {
       const part = (m.parts || []).find((p) => p.id === partId);
       if (part && part.questions && part.questions[0]) {
         const q = part.questions[0];
         const opt = q.options[Number(value)];
-        if (opt) rooms.respondApproval(roomId, partId, 'allow', { [q.id]: [opt.label] });
+        if (opt) res.ok = rooms.respondApproval(roomId, partId, 'allow', { [q.id]: [opt.label] });
       }
     }
   });
+  tg.on('backlog', botBacklog);
+  tg.persistRooms(path.join(app.getPath('userData'), 'telegram-rooms.json'));
   tg.on('command', (c) => botCommand(c).catch(() => {}));
   tg.on('text', (t) => botText(t).catch((err) => tg.say(`⚠️ ${esc(err.message)}`)));
   tg.on('button', (b) => botButton(b).catch(() => {}));
@@ -611,7 +615,67 @@ async function botText({ text, file, roomId, plan = false }) {
   tg.typing();
 }
 
+// Задачи, присланные в бот, пока DuoCode был выключен: не запускаем сами, а спрашиваем, что с ними делать.
+let backlog = null; // { id, items }
+
+function ago(date) {
+  const min = Math.round((Date.now() / 1000 - date) / 60);
+  if (min < 60) return `${min} мин назад`;
+  const h = Math.round(min / 60);
+  return h < 24 ? `${h} ч назад` : 'больше суток назад';
+}
+
+async function waitIdle(roomId) {
+  const busy = () => {
+    const r = rooms.get(roomId);
+    return r && (r.running.claude || r.running.codex);
+  };
+  await new Promise((r) => setTimeout(r, 1500));
+  while (busy()) await new Promise((r) => setTimeout(r, 2000));
+}
+
+function botBacklog(items) {
+  const tasks = items.filter((i) => !i.command);
+  const commands = items.filter((i) => i.command);
+  const lines = ['🟢 <b>DuoCode снова на связи.</b>'];
+  if (tasks.length) {
+    backlog = { id: Date.now().toString(36), items: tasks };
+    lines.push(`Пока компьютер был недоступен, пришло задач: ${tasks.length}. Я их не запускал, чтобы они не налетели разом.\n`);
+    tasks.slice(-8).forEach((t, i) => {
+      const room = t.roomId && rooms.get(t.roomId);
+      const what = t.text ? esc(clip(t.text.replace(/\s+/g, ' '), 90)) : '📎 вложение';
+      lines.push(`${tasks.length > 8 ? tasks.length - 8 + i + 1 : i + 1}. «${what}» · ${ago(t.date)}${room ? ` · ${esc(clip(room.title, 30))}` : ''}`);
+    });
+    if (tasks.length > 8) lines.push(`…и ещё ${tasks.length - 8} раньше`);
+  }
+  if (commands.length) lines.push(`\nКоманды из этого времени пропущены: ${[...new Set(commands.map((c) => '/' + c.command))].join(', ')}.`);
+  const id = backlog && backlog.id;
+  const buttons = tasks.length
+    ? [
+        [{ text: tasks.length > 1 ? '▶ Только последнюю' : '▶ Выполнить', callback_data: `c|backlog|last.${id}` }],
+        ...(tasks.length > 1 ? [[{ text: `▶ Все ${tasks.length} по очереди`, callback_data: `c|backlog|all.${id}` }]] : []),
+        [{ text: '✖ Не выполнять', callback_data: `c|backlog|skip.${id}` }],
+      ]
+    : null;
+  tg.say(lines.join('\n'), buttons);
+}
+
 async function botButton({ action, value, messageId }) {
+  if (action === 'backlog') {
+    const [what, id] = value.split('.');
+    if (!backlog || backlog.id !== id) return tg.edit(messageId, '⌛ Этот список уже неактуален.');
+    const items = what === 'all' ? backlog.items : what === 'last' ? backlog.items.slice(-1) : [];
+    backlog = null;
+    if (!items.length) return tg.edit(messageId, '✖ Накопленные задачи не выполнялись.');
+    await tg.edit(messageId, `▶ Запускаю: ${items.length === 1 ? '1 задачу' : `${items.length} ${items.length % 10 < 5 && (items.length < 10 || items.length > 20) ? 'задачи' : 'задач'} по очереди`}.`);
+    for (const t of items) {
+      const room = t.roomId ? rooms.get(t.roomId) : activeRoom();
+      await botText(t);
+      // следующую — только когда агенты закончили, иначе она дописалась бы в текущую работу
+      if (room && items.length > 1) await waitIdle(room.id);
+    }
+    return;
+  }
   if (action === 'room' || action === 'proj') {
     let room;
     if (action === 'proj') {

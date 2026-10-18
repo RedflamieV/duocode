@@ -767,7 +767,7 @@ class Rooms extends EventEmitter {
 
   respondApproval(roomId, approvalId, decision, extra) {
     const ap = this.approvals.get(approvalId);
-    if (!ap || ap.room.id !== roomId) return;
+    if (!ap || ap.room.id !== roomId) return false;
     this.approvals.delete(approvalId);
     if (ap.question) {
       ap.part.status = decision === 'deny' ? 'skipped' : 'answered';
@@ -775,7 +775,7 @@ class Rooms extends EventEmitter {
       this.markDirty(ap.room, ap.msg);
       this.emitRooms();
       ap.resolve(decision === 'deny' ? null : extra);
-      return;
+      return true;
     }
     ap.part.status = decision === 'deny' ? 'denied' : 'allowed';
     if (extra) ap.part.feedback = extra;
@@ -787,6 +787,7 @@ class Rooms extends EventEmitter {
     this.markDirty(ap.room, ap.msg);
     this.emitRooms();
     ap.resolve(decision, extra);
+    return true;
   }
 
   // ---------- Мост (вызовы из bridge/mcp.js) ----------
