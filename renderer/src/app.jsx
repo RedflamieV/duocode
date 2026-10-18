@@ -2,7 +2,7 @@ import { render } from 'preact';
 import { useState, useEffect, useRef, useMemo, useCallback, useContext } from 'preact/hooks';
 import { PrefsContext, DEFAULT_PREFS, applyPrefs } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
-import { Attachments } from './attachments.jsx';
+import { Attachments, Lightbox } from './attachments.jsx';
 import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
 import { TitleInput } from './titleinput.jsx';
 import { SidePanel, StatsModal } from './panels.jsx';
@@ -1915,6 +1915,7 @@ function App() {
 
   return (
     <PrefsContext.Provider value={prefs}>
+    <Lightbox />
     <div class={`app platform-${duo.platform}`}>
       <Sidebar
         rooms={rooms}

@@ -39,8 +39,9 @@ function checkInitData(initData, botToken, ownerId, maxAgeSec = 86400) {
 // ---------- Сервер ----------
 
 class RemoteServer extends EventEmitter {
-  constructor({ root, getAuth, api }) {
+  constructor({ root, getAuth, api, resolveImage }) {
     super();
+    this.resolveImage = resolveImage; // (путь) => абсолютный путь картинки, которую можно показать, или null
     this.root = root; // папка renderer
     this.getAuth = getAuth; // () => { token, userId }
     this.api = api; // { method: async (...args) => result }
@@ -119,6 +120,16 @@ class RemoteServer extends EventEmitter {
         this.clients.delete(res);
       });
       return;
+    }
+
+    // картинки из чатов: подпись — в адресе (тег <img> не умеет слать заголовки), путь проверяет DuoCode
+    if (req.method === 'GET' && url.pathname === '/api/image') {
+      if (!this.auth(url.searchParams.get('auth'))) return this.json(res, 401, { error: 'Нет доступа' });
+      const file = this.resolveImage && this.resolveImage(url.searchParams.get('path') || '');
+      if (!file) return res.writeHead(404).end();
+      const TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
+      res.writeHead(200, { 'Content-Type': TYPES[path.extname(file).toLowerCase()], 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+      return fs.createReadStream(file).on('error', () => res.end()).pipe(res);
     }
 
     if (req.method === 'POST' && url.pathname === '/api/rpc') {

@@ -2,7 +2,7 @@ import { useState, useMemo, useContext } from 'preact/hooks';
 import { PrefsContext } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { renderMarkdown } from './markdown.js';
-import { Attachments } from './attachments.jsx';
+import { Attachments, imageUrl } from './attachments.jsx';
 import { DiffView } from './panels.jsx';
 
 export const NAME = { claude: 'Claude', codex: 'Codex' };
@@ -36,8 +36,8 @@ function ModelTag({ msg }) {
   );
 }
 
-function Markdown({ text, class: cls = '' }) {
-  const html = useMemo(() => renderMarkdown(text), [text]);
+function Markdown({ text, class: cls = '', cwd = '' }) {
+  const html = useMemo(() => renderMarkdown(text, cwd), [text, cwd]);
   return <div class={`md ${cls}`} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
@@ -104,6 +104,11 @@ function ToolPart({ part, cwd }) {
         </span>
         {hasBody ? <Icon name={open ? 'down' : 'right'} size={14} class="chev" /> : null}
       </button>
+      {part.image && (
+        <div class="tool-image">
+          <img class="zoomable" src={imageUrl(part.image)} alt="" loading="lazy" onError={(e) => (e.target.parentNode.style.display = 'none')} />
+        </div>
+      )}
       {open && (
         <div class="tool-body">
           {part.command && <pre class="cmd">{part.icon === 'terminal' ? '$ ' : ''}{part.command}</pre>}
@@ -408,7 +413,8 @@ function Parts({ msg, room, byId }) {
       group = [];
     };
     for (const p of msg.parts) {
-      if ((p.kind === 'tool' && p.icon !== 'todo') || p.kind === 'thinking') group.push(p);
+      // картинки, которые агент смотрел, не прячем в свёрнутую группу шагов
+      if ((p.kind === 'tool' && p.icon !== 'todo' && !p.image) || p.kind === 'thinking') group.push(p);
       else {
         flush();
         out.push(renderPart(p, msg, room, byId));
@@ -423,7 +429,7 @@ function Parts({ msg, room, byId }) {
 function renderPart(p, msg, room, byId) {
   switch (p.kind) {
     case 'text':
-      return <Markdown key={p.id} text={p.text} />;
+      return <Markdown key={p.id} text={p.text} cwd={room.cwd} />;
     case 'thinking':
       return <Thinking key={p.id} part={p} />;
     case 'tool':
@@ -600,7 +606,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
       </div>
       <div class="msg-body">
         <Parts msg={msg} room={room} byId={byId} />
-        {msg.draft ? msg.draftKind === 'thinking' ? <div class="thinking live"><Icon name="sparkles" size={14} /> <span class="tool-sub">{msg.draft.slice(-200)}</span></div> : <Markdown text={msg.draft} class="streaming" /> : null}
+        {msg.draft ? msg.draftKind === 'thinking' ? <div class="thinking live"><Icon name="sparkles" size={14} /> <span class="tool-sub">{msg.draft.slice(-200)}</span></div> : <Markdown text={msg.draft} class="streaming" cwd={room.cwd} /> : null}
         {running && empty && <div class="typing"><i /><i /><i /></div>}
         {msg.error && (
           <div class="error-box">

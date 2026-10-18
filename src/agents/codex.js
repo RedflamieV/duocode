@@ -200,6 +200,8 @@ function itemPart(item, prev) {
         files: item.changes.map((c) => ({ path: c.path, diff: clip(c.diff, 20000), kind: c.kind && c.kind.type })),
         status: item.status === 'inProgress' ? 'running' : item.status === 'completed' ? 'ok' : 'error',
       };
+    case 'imageView':
+      return { id: item.id, kind: 'tool', icon: 'read', title: 'Посмотрел картинку', subtitle: item.path, image: item.path, status: 'ok' };
     case 'mcpToolCall': {
       if (item.server === 'duo') return null; // делегирование рисует DuoCode
       const out = item.result

@@ -54,6 +54,7 @@ function toolPart(id, name, input = {}) {
     case 'NotebookEdit':
       return { ...base, icon: 'edit', title: 'Правка ноутбука', subtitle: file };
     case 'Read':
+      if (file && IMAGE_TYPES[path.extname(file).toLowerCase()]) return { ...base, icon: 'read', title: 'Посмотрел картинку', subtitle: file, image: file };
       return { ...base, icon: 'read', title: 'Чтение', subtitle: file };
     case 'Grep':
       return { ...base, icon: 'search', title: 'Поиск по коду', subtitle: input.pattern };

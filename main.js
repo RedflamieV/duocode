@@ -802,6 +802,39 @@ function telegramFinished(room, msg) {
 
 // ---------- Мини-приложение Telegram ----------
 
+// Картинка для мини-приложения: только изображения и только из папок проектов, вложений и копий
+// для сравнения — чтобы по ссылке нельзя было вытащить с компьютера что-то ещё.
+function remoteImage(p) {
+  if (!p || !/\.(png|jpe?g|gif|webp|bmp)$/i.test(p) || !path.isAbsolute(p)) return null;
+  let real;
+  try {
+    real = fs.realpathSync(p);
+    if (!fs.statSync(real).isFile()) return null;
+  } catch {
+    return null;
+  }
+  const userData = app.getPath('userData');
+  const roots = [
+    ...projects.list(settings).flatMap((w) => w.folders),
+    ...rooms.list().map((r) => r.cwd),
+    path.join(userData, 'attachments'),
+    path.join(userData, 'worktrees'),
+  ];
+  const norm = (x) => (process.platform === 'win32' ? x.toLowerCase() : x);
+  return roots.some((root) => {
+    let r;
+    try {
+      r = fs.realpathSync(root);
+    } catch {
+      return false;
+    }
+    const rel = path.relative(norm(r), norm(real));
+    return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  })
+    ? real
+    : null;
+}
+
 function setupRemote() {
 
   remote = new RemoteServer({
@@ -824,6 +857,7 @@ function setupRemote() {
       limits: () => limits,
       projects: () => projects.list(settings),
     },
+    resolveImage: remoteImage,
   });
   tunnel = new Tunnel(path.join(app.getPath('userData'), 'bin'));
   tunnel.on('status', (s) => {

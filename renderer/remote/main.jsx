@@ -5,6 +5,7 @@ import { Icon, Avatar } from '../src/icons.jsx';
 import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf } from '../src/messages.jsx';
 import { PrefsContext, DEFAULT_PREFS } from '../src/prefs.js';
 import { TitleInput } from '../src/titleinput.jsx';
+import { Lightbox } from '../src/attachments.jsx';
 
 const duo = window.duo;
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -292,9 +293,10 @@ function Room({ room, onLocal }) {
               onDone={() => setRenaming(false)}
             />
           ) : (
-            <b onClick={() => setRenaming(true)}>
-              {title || room.title} <Icon name="edit" size={12} />
-            </b>
+            <span class="m-title-row" onClick={() => setRenaming(true)}>
+              <b>{title || room.title}</b>
+              <Icon name="edit" size={12} />
+            </span>
           )}
           <small>
             <Icon name="folder" size={12} /> {baseName(room.cwd)}
@@ -450,6 +452,7 @@ function App() {
   return (
     <PrefsContext.Provider value={PREFS}>
       <div class="m-app">
+        <Lightbox />
         {status === 'offline' && <div class="m-offline">Нет связи с компьютером — переподключаюсь…</div>}
         {screen === 'home' && <Home rooms={rooms} limits={limits} projects={projects} onOpen={openRoom} onNew={() => setScreen('new')} />}
         {screen === 'new' && <NewChat onCreated={openRoom} />}

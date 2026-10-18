@@ -14,6 +14,9 @@ async function rpc(method, ...args) {
   return json.result;
 }
 
+// картинки с компьютера (вложения, скриншоты агентов) — через API, с той же подписью Telegram
+window.duoImageUrl = (p) => `api/image?path=${encodeURIComponent(p)}&auth=${encodeURIComponent(initData)}`;
+
 const listeners = { rooms: new Set(), messages: new Set(), limits: new Set(), status: new Set(), changed: new Set() };
 let source = null;
 let lastEvent = 0;
