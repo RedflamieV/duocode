@@ -151,10 +151,11 @@ function userInput(text, attachments = []) {
   return [{ type: 'text', text: text + list, text_elements: [] }, ...images.map((i) => ({ type: 'localImage', path: i.path }))];
 }
 
-function sandboxPolicy(mode) {
+// writableRoots — дополнительные папки проекта, в которые Codex тоже может писать
+function sandboxPolicy(mode, writableRoots = []) {
   if (mode === 'full') return { type: 'dangerFullAccess' };
   if (mode === 'plan') return { type: 'readOnly', networkAccess: true };
-  return { type: 'workspaceWrite', writableRoots: [], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+  return { type: 'workspaceWrite', writableRoots, networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
 }
 
 function threadParams({ cwd, mode, model, config, instructions }) {
@@ -229,7 +230,7 @@ function itemPart(item, prev) {
  * Один ход Codex в треде. События — как у runClaude: part, draft, session, done.
  * onApproval(kind, data) → Promise<'allow'|'allowSession'|'deny'>
  */
-function runCodex(server, { prompt, action, review, attachments, plan, threadId, fork, cwd, mode, model, effort, config, instructions, onApproval, onQuestion }) {
+function runCodex(server, { prompt, action, review, attachments, plan, threadId, fork, cwd, mode, model, effort, config, instructions, onApproval, onQuestion, writableRoots = [] }) {
   const turnMode = plan ? 'plan' : mode;
   const ev = new EventEmitter();
   const parts = new Map();
@@ -400,7 +401,7 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
       threadId: tid,
       input: userInput((plan ? PLAN_PREFIX : '') + prompt, attachments),
       approvalPolicy: s.approvalPolicy,
-      sandboxPolicy: sandboxPolicy(turnMode),
+      sandboxPolicy: sandboxPolicy(turnMode, writableRoots),
     };
     if (model) turnParams.model = model;
     if (effort) turnParams.effort = effort;

@@ -48,17 +48,21 @@ function score(file, q) {
   return i === q.length ? 4 : -1;
 }
 
-function searchFiles(cwd, query) {
-  if (!cwd) return [];
+// dirs — папки проекта. Если их несколько, путь показываем с именем папки: «backend/src/app.ts».
+function searchFiles(dirs, query) {
+  const list = (Array.isArray(dirs) ? dirs : [dirs]).filter(Boolean);
+  if (!list.length) return [];
+  const many = list.length > 1;
   const q = (query || '').toLowerCase().replace(/\\/g, '/');
-  const files = listFiles(cwd);
-  if (!q) return files.slice(0, 30).map((p) => ({ path: p }));
-  return files
-    .map((p) => ({ p, s: score(p, q) }))
-    .filter((x) => x.s >= 0)
-    .sort((a, b) => a.s - b.s || a.p.length - b.p.length)
-    .slice(0, 30)
-    .map((x) => ({ path: x.p }));
+  const files = list.flatMap((dir) => listFiles(dir).map((rel) => ({ rel, dir, path: many ? `${path.basename(dir)}/${rel}` : rel })));
+  const pick = q
+    ? files
+        .map((f) => ({ f, s: score(f.path, q) }))
+        .filter((x) => x.s >= 0)
+        .sort((a, b) => a.s - b.s || a.f.path.length - b.f.path.length)
+        .map((x) => x.f)
+    : files;
+  return pick.slice(0, 30).map((f) => ({ path: f.path, abs: path.join(f.dir, f.rel) }));
 }
 
 module.exports = { searchFiles };

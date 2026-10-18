@@ -94,7 +94,7 @@ function resultText(content) {
  *  done({ text, error, cost, usage })
  * ev.steer(text, attachments) дописывает сообщение в идущую работу; false — если процесс уже закрывается.
  */
-function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, env }) {
+function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, env, addDirs = [] }) {
   const ev = new EventEmitter();
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   args.push('--mcp-config', mcpConfigPath, '--append-system-prompt-file', systemPromptPath);
@@ -108,6 +108,7 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   }
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
+  for (const d of addDirs) args.push('--add-dir', d);
   if (sessionId) {
     args.push('--resume', sessionId);
     if (fork) args.push('--fork-session');

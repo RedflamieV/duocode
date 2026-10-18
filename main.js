@@ -14,6 +14,7 @@ const { allSessions, claudeToday, codexToday, dailyUsage } = require('./src/hist
 const { listCommands } = require('./src/commands');
 const gitx = require('./src/git');
 const { searchFiles } = require('./src/files');
+const projects = require('./src/projects');
 const memory = require('./src/memory');
 const { Telegram, esc, clip } = require('./src/telegram');
 const { RemoteServer, Tunnel } = require('./src/remote');
@@ -95,6 +96,7 @@ function loadSettings() {
     // старый чат только подставляем в поле как подсказку, но не доверяем ему сами.
     if (settings.telegram.chatId && !settings.telegram.userId) settings.telegram.suggestedId = settings.telegram.chatId;
     delete settings.telegram.chatId;
+    if (projects.migrate(settings)) saveSettings();
   } catch {
     settings = { ...defaults };
   }
@@ -107,7 +109,23 @@ function saveSettings() {
 
 function rememberProject(dir) {
   settings.projects = [dir, ...settings.projects.filter((p) => p !== dir)].slice(0, 20);
+  const { project } = projects.forFolder(settings, dir);
   saveSettings();
+  return project;
+}
+
+// Новый чат: в существующем проекте (projectId) или в папке (cwd), для которой проект заведётся сам.
+function createRoom({ projectId, cwd, title }) {
+  let project = projectId && projects.get(settings, projectId);
+  if (!project) project = rememberProject(cwd);
+  else rememberProject(project.folders[0]);
+  return rooms.create({ cwd: project.folders[0], projectId: project.id, title });
+}
+
+// Папки проекта, где эта папка основная (для поиска файлов и панели Git).
+function foldersOf(cwd) {
+  const p = projects.list(settings).find((x) => x.folders[0] && projects.norm(x.folders[0]) === projects.norm(cwd));
+  return p ? p.folders : [cwd];
 }
 
 // ---------- Мост для MCP-инструментов агентов ----------
@@ -545,8 +563,9 @@ async function botCommand({ name, args }) {
       );
     }
     case 'new': {
-      if (!settings.projects.length) return tg.say('Сначала откройте папку проекта в DuoCode на компьютере.');
-      return tg.say('<b>В каком проекте?</b>', settings.projects.slice(0, 10).map((p, i) => [{ text: path.basename(p) || p, callback_data: `c|proj|${i}` }]));
+      const list = projects.list(settings);
+      if (!list.length) return tg.say('Сначала создайте проект в DuoCode на компьютере.');
+      return tg.say('<b>В каком проекте?</b>', list.slice(0, 12).map((p) => [{ text: `${p.name}${p.folders.length > 1 ? ` · ${p.folders.length} папки` : ''}`, callback_data: `c|proj|${p.id}` }]));
     }
     case 'to':
       return tg.say(`Сейчас пишете: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>`, targetButtons());
@@ -595,9 +614,8 @@ async function botButton({ action, value, messageId }) {
   if (action === 'room' || action === 'proj') {
     let room;
     if (action === 'proj') {
-      const cwd = settings.projects[Number(value)];
-      if (!cwd) return;
-      room = rooms.create({ cwd });
+      if (!projects.get(settings, value)) return tg.say('Проект не найден');
+      room = createRoom({ projectId: value });
     } else room = rooms.get(value);
     if (!room) return tg.say('Чат не найден');
     setBot({ activeRoom: room.id });
@@ -712,7 +730,7 @@ function telegramFinished(room, msg) {
 // ---------- Мини-приложение Telegram ----------
 
 function setupRemote() {
-  const inProjects = (cwd) => settings.projects.includes(cwd);
+
   remote = new RemoteServer({
     root: path.join(__dirname, 'renderer'),
     getAuth: () => ({ token: settings.telegram.token, userId: settings.telegram.userId }),
@@ -720,7 +738,7 @@ function setupRemote() {
       listRooms: () => rooms.list(),
       getRoom: (id) => rooms.get(id),
       // новые чаты — только в проектах, которые вы уже открывали в DuoCode на компьютере
-      createRoom: ({ cwd }) => (inProjects(cwd) ? rooms.create({ cwd }) : Promise.reject(new Error('Неизвестный проект'))),
+      createRoom: ({ projectId }) => (projects.get(settings, projectId) ? createRoom({ projectId }) : Promise.reject(new Error('Неизвестный проект'))),
       setRoomSettings: (id, patch) => rooms.updateSettings(id, patch),
       send: (id, payload) => rooms.send(id, payload),
       stop: (id) => rooms.stop(id),
@@ -730,7 +748,7 @@ function setupRemote() {
       checkpointDiff: (id, msgId, file) => rooms.checkpointDiff(id, msgId, file),
       duelApply: (id, duelId, choice) => rooms.applyDuel(id, duelId, choice),
       limits: () => limits,
-      projects: () => settings.projects,
+      projects: () => projects.list(settings),
     },
   });
   tunnel = new Tunnel(path.join(app.getPath('userData'), 'bin'));
@@ -846,13 +864,10 @@ function notify(title, body, roomId) {
 function bindIpc() {
   ipcMain.handle('rooms:list', () => rooms.list());
   ipcMain.handle('rooms:get', (_e, id) => rooms.get(id));
-  ipcMain.handle('rooms:create', (_e, opts) => {
-    rememberProject(opts.cwd);
-    return rooms.create(opts);
-  });
+  ipcMain.handle('rooms:create', (_e, opts) => createRoom(opts));
   ipcMain.handle('rooms:import', (_e, s) => {
-    if (s.cwd) rememberProject(s.cwd);
-    return rooms.importSession(s);
+    const project = s.cwd ? rememberProject(s.cwd) : null;
+    return rooms.importSession({ ...s, projectId: project && project.id });
   });
   ipcMain.handle('rooms:rename', (_e, id, title) => rooms.rename(id, title));
   ipcMain.handle('rooms:settings', (_e, id, patch) => rooms.updateSettings(id, patch));
@@ -879,7 +894,15 @@ function bindIpc() {
 
   ipcMain.handle('limits:get', () => limits);
   ipcMain.handle('limits:refresh', () => refreshAllLimits(true).then(() => limits));
-  ipcMain.handle('history:get', () => allSessions().slice(0, 60));
+  // сессии из терминала, кроме тех, что уже ведёт DuoCode, и временных копий проекта
+  ipcMain.handle('history:get', () => {
+    const own = new Set();
+    for (const r of rooms.rooms.values()) for (const id of Object.values(r.sessions || {})) if (id) own.add(id);
+    const worktrees = path.join(app.getPath('userData'), 'worktrees');
+    return allSessions()
+      .filter((s) => !own.has(s.id) && !(s.cwd || '').startsWith(worktrees) && !/^\s*(<duocode_|\[(Запрос от|Режим сравнения|Режим планирования))/.test(s.title))
+      .slice(0, 60);
+  });
 
   ipcMain.handle('codex:models', async () => {
     try {
@@ -930,7 +953,26 @@ function bindIpc() {
   ipcMain.handle('app:version', () => app.getVersion());
 
   ipcMain.handle('commands:list', (_e, cwd) => listCommands(cwd));
-  ipcMain.handle('files:search', (_e, cwd, q) => searchFiles(cwd, q));
+  ipcMain.handle('files:search', (_e, cwd, q) => searchFiles(foldersOf(cwd), q));
+
+  // проекты
+  ipcMain.handle('projects:save', (_e, input) => {
+    const p = projects.save(settings, input);
+    saveSettings();
+    win.webContents.send('settings', settings);
+    rooms.emitRooms();
+    return p;
+  });
+  ipcMain.handle('projects:remove', (_e, id) => {
+    projects.remove(settings, id);
+    saveSettings();
+    win.webContents.send('settings', settings);
+    rooms.emitRooms();
+  });
+  ipcMain.handle('projects:pickFolders', async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'multiSelections', 'createDirectory'] });
+    return res.canceled ? [] : res.filePaths;
+  });
 
   // откат правок и дуэль
   ipcMain.handle('rooms:revert', (_e, id, msgId, redo) => rooms.revert(id, msgId, redo));
@@ -1026,6 +1068,17 @@ app.whenReady().then(async () => {
     worktreeDir: path.join(userData, 'worktrees'),
     pickAgent,
   });
+
+  // чаты из версий без проектов: привязываем к проекту их папки
+  let migrated = false;
+  for (const r of rooms.rooms.values()) {
+    if (r.projectId || !r.cwd) continue;
+    const { project, created } = projects.forFolder(settings, r.cwd);
+    r.projectId = project.id;
+    rooms.store.save(r);
+    migrated = migrated || created;
+  }
+  if (migrated) saveSettings();
 
   rooms.on('messages', (roomId, msgs) => win && !win.isDestroyed() && win.webContents.send('messages', roomId, msgs));
   rooms.on('rooms', (list) => win && !win.isDestroyed() && win.webContents.send('rooms', list));

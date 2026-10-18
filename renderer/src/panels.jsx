@@ -209,7 +209,9 @@ function MemoryPanel({ cwd }) {
   );
 }
 
-export function SidePanel({ room, tab, setTab, onClose }) {
+export function SidePanel({ room, folders, tab, setTab, onClose }) {
+  const [folder, setFolder] = useState(room.cwd);
+  useEffect(() => setFolder(room.cwd), [room.id]);
   return (
     <aside class="side-panel">
       <div class="side-head">
@@ -227,7 +229,16 @@ export function SidePanel({ room, tab, setTab, onClose }) {
           <Icon name="x" size={15} />
         </button>
       </div>
-      <div class="side-body">{tab === 'changes' ? <GitPanel cwd={room.cwd} /> : <MemoryPanel cwd={room.cwd} />}</div>
+      {tab === 'changes' && folders && folders.length > 1 && (
+        <div class="folder-tabs">
+          {folders.map((f) => (
+            <button key={f} class={`chip-btn ${folder === f ? 'active' : ''}`} onClick={() => setFolder(f)} title={f}>
+              <Icon name="folder" size={12} /> {f.replace(/[\\/]+$/, '').split(/[\\/]/).pop()}
+            </button>
+          ))}
+        </div>
+      )}
+      <div class="side-body">{tab === 'changes' ? <GitPanel cwd={folder} key={folder} /> : <MemoryPanel cwd={room.cwd} />}</div>
     </aside>
   );
 }

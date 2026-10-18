@@ -11,6 +11,7 @@ const { runCodex } = require('./agents/codex');
 const { clip, uid } = require('./agents/util');
 const { expandCodexPrompt, REVIEW_PROMPT, CODEX_INIT_PROMPT } = require('./commands');
 const memory = require('./memory');
+const projects = require('./projects');
 const gitx = require('./git');
 
 const AGENTS = ['claude', 'codex'];
@@ -83,7 +84,7 @@ class Rooms extends EventEmitter {
     const running = {};
     for (const a of AGENTS) running[a] = [...this.runs.values()].some((r) => r.room.id === room.id && r.agent === a);
     const waiting = [...this.approvals.values()].some((ap) => ap.room.id === room.id);
-    return { id: room.id, title: room.title, cwd: room.cwd, updatedAt: room.updatedAt, settings: room.settings, context: room.context || {}, running, waiting };
+    return { id: room.id, title: room.title, cwd: room.cwd, projectId: room.projectId || null, updatedAt: room.updatedAt, settings: room.settings, context: room.context || {}, running, waiting };
   }
 
   list() {
@@ -97,12 +98,13 @@ class Rooms extends EventEmitter {
 
   // ---------- Изменение ----------
 
-  create({ cwd, title }) {
+  create({ cwd, title, projectId = null }) {
     const now = Date.now();
     const room = {
       id: uid('room-'),
       title: title || 'Новый чат',
       cwd,
+      projectId,
       createdAt: now,
       updatedAt: now,
       settings: { mode: 'ask', delegation: 'auto', claudeModel: '', claudeEffort: '', codexModel: '', codexEffort: '' },
@@ -116,8 +118,8 @@ class Rooms extends EventEmitter {
     return this.get(room.id);
   }
 
-  importSession({ tool, sessionId, cwd, title }) {
-    const room = this.rooms.get(this.create({ cwd, title: short(title, 60) }).id);
+  importSession({ tool, sessionId, cwd, title, projectId = null }) {
+    const room = this.rooms.get(this.create({ cwd, title: short(title, 60), projectId }).id);
     room.sessions[tool] = sessionId;
     room.messages.push({
       id: uid('m'),
@@ -265,7 +267,14 @@ class Rooms extends EventEmitter {
     const msg = room && room.messages.find((m) => m.id === msgId);
     const cp = msg && msg.checkpoint;
     if (!cp) return { ok: false };
-    const r = await this.checkpoints.restore(room.cwd, redo ? cp.after : cp.before, cp.files.map((f) => f.path));
+    // старый формат (до проектов из нескольких папок): одна папка room.cwd
+    const parts = cp.parts || [{ dir: room.cwd, before: cp.before, after: cp.after, files: cp.files }];
+    const r = { restored: 0, removed: 0 };
+    for (const p of parts) {
+      const x = await this.checkpoints.restore(p.dir, redo ? p.after : p.before, p.files.map((f) => f.path));
+      r.restored += x.restored;
+      r.removed += x.removed;
+    }
     cp.reverted = !redo;
     this.markDirty(room, msg);
     this.touch(room);
@@ -276,7 +285,15 @@ class Rooms extends EventEmitter {
     const room = this.rooms.get(roomId);
     const msg = room && room.messages.find((m) => m.id === msgId);
     if (!msg || !msg.checkpoint) return '';
-    return this.checkpoints.diff(room.cwd, msg.checkpoint.before, msg.checkpoint.after, file);
+    const cp = msg.checkpoint;
+    const parts = cp.parts || [{ dir: room.cwd, before: cp.before, after: cp.after, files: cp.files }];
+    const many = parts.length > 1 || (cp.parts && cp.files.some((f) => f.path.includes('/') && !parts[0].files.some((x) => x.path === f.path)));
+    for (const p of parts) {
+      const prefix = `${path.basename(p.dir)}/`;
+      const rel = p.files.find((f) => f.path === file || (many && prefix + f.path === file));
+      if (rel) return this.checkpoints.diff(p.dir, p.before, p.after, rel.path);
+    }
+    return '';
   }
 
   // ---------- Дуэль: оба агента решают задачу в своих копиях проекта ----------
@@ -532,6 +549,12 @@ class Rooms extends EventEmitter {
     this.markDirty(room, msg);
     this.emitRooms();
 
+    // папки проекта: основная — рабочая папка агента, остальные он тоже видит и может менять
+    const folders = projects.roomFolders(this.getSettings(), room);
+    const projectNote = folders.extra.length
+      ? `This project "${folders.project ? folders.project.name : path.basename(folders.main)}" spans several folders. Main (current working) folder: ${workDir}. Other project folders you can read and edit: ${folders.extra.join('; ')}.`
+      : '';
+
     let resolveDone;
     const done = new Promise((r) => (resolveDone = r));
     const tmpFiles = [];
@@ -549,11 +572,17 @@ class Rooms extends EventEmitter {
         msg.parts.push({ id: uid('p'), kind: 'planReady', status: 'pending' });
       }
       for (const f of tmpFiles) fs.rm(f, () => {});
-      // снимок после хода: что агент поменял в файлах — для кнопки «Откатить»
+      // снимок после хода: что агент поменял в файлах всех папок проекта — для кнопки «Откатить»
       if (before && !isolated) {
-        const after = await this.checkpoints.snapshot(workDir).catch(() => null);
-        const files = after ? await this.checkpoints.changes(workDir, before, after).catch(() => []) : [];
-        if (files.length) msg.checkpoint = { before, after, files, reverted: false };
+        const parts = [];
+        for (const b of before) {
+          const after = await this.checkpoints.snapshot(b.dir).catch(() => null);
+          const files = after ? await this.checkpoints.changes(b.dir, b.tree, after).catch(() => []) : [];
+          if (files.length) parts.push({ dir: b.dir, before: b.tree, after, files });
+        }
+        const many = before.length > 1;
+        const files = parts.flatMap((p) => p.files.map((f) => ({ ...f, dir: p.dir, label: many ? `${path.basename(p.dir)}/${f.path}` : f.path })));
+        if (files.length) msg.checkpoint = { parts, files: files.map((f) => ({ status: f.status, path: f.label })), reverted: false };
       }
       msg.finishedAt = Date.now();
       this.runs.delete(msg.id);
@@ -568,7 +597,14 @@ class Rooms extends EventEmitter {
     };
 
     const start = async () => {
-      if (!isolated) before = await this.checkpoints.snapshot(workDir).catch(() => null);
+      const dirs = isolated ? null : [projects.roomFolders(this.getSettings(), room).main, ...folders.extra];
+      if (dirs) {
+        before = [];
+        for (const dir of dirs) {
+          const tree = await this.checkpoints.snapshot(dir).catch(() => null);
+          if (tree) before.push({ dir, tree });
+        }
+      }
       const settings = this.getSettings();
       const env = {
         ELECTRON_RUN_AS_NODE: '1',
@@ -590,7 +626,10 @@ class Rooms extends EventEmitter {
             },
           }),
         );
-        fs.writeFileSync(promptFile, INSTRUCTIONS.claude + (memoryBlock ? `\n\nShared project memory (both agents see it):\n${memoryBlock}` : ''));
+        fs.writeFileSync(
+          promptFile,
+          INSTRUCTIONS.claude + (projectNote && !isolated ? `\n\n${projectNote}` : '') + (memoryBlock ? `\n\nShared project memory (both agents see it):\n${memoryBlock}` : ''),
+        );
         handle = runClaude({
           command: settings.claudeCommand,
           prompt: fullPrompt,
@@ -604,6 +643,7 @@ class Rooms extends EventEmitter {
           effort: room.settings.claudeEffort,
           mcpConfigPath: mcpFile,
           systemPromptPath: promptFile,
+          addDirs: isolated ? [] : folders.extra,
         });
       } else {
         // память Codex получает в сообщении, когда она изменилась с прошлого раза
@@ -613,6 +653,11 @@ class Rooms extends EventEmitter {
         if (memoryBlock && !raw && (isolated || room.memorySeen.codex !== hash)) {
           text = `${memoryBlock}\n\n${text}`;
           if (!isolated) room.memorySeen.codex = hash;
+        }
+        // состав папок Codex узнаёт в сообщении, когда он изменился
+        if (projectNote && !raw && !isolated && room.memorySeen.codexDirs !== projectNote) {
+          text = `[${projectNote}]\n\n${text}`;
+          room.memorySeen.codexDirs = projectNote;
         }
         handle = runCodex(this.codex, {
           prompt: text,
@@ -626,6 +671,7 @@ class Rooms extends EventEmitter {
           mode: room.settings.mode,
           model: room.settings.codexModel,
           effort: room.settings.codexEffort,
+          writableRoots: isolated ? [] : folders.extra,
           instructions: INSTRUCTIONS.codex,
           config: {
             'mcp_servers.duo': {

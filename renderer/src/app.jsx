@@ -180,7 +180,19 @@ function UpdateBanner({ update }) {
   );
 }
 
-function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
+function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEditProject, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return JSON.parse(store('collapsed') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const toggle = (key) => {
+    const next = { ...collapsed, [key]: !collapsed[key] };
+    setCollapsed(next);
+    store('collapsed', JSON.stringify(next));
+  };
   const [q, setQ] = useState('');
   const [found, setFound] = useState([]);
   useEffect(() => {
@@ -189,15 +201,21 @@ function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, ref
     return () => clearTimeout(t);
   }, [q]);
   const groups = useMemo(() => {
-    const filtered = rooms.filter((r) => !q || r.title.toLowerCase().includes(q.toLowerCase()) || (r.cwd || '').toLowerCase().includes(q.toLowerCase()));
+    // группы: проекты (в порядке последней активности), затем проекты без чатов
+    const needle = q.toLowerCase();
+    const byId = new Map(projects.map((p) => [p.id, p]));
     const map = new Map();
-    for (const r of filtered) {
-      const key = r.cwd || '';
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(r);
+    for (const r of rooms) {
+      const p = r.projectId && byId.get(r.projectId);
+      const key = p ? p.id : `dir:${r.cwd || ''}`;
+      const name = p ? p.name : baseName(r.cwd) || 'Без проекта';
+      if (needle && !r.title.toLowerCase().includes(needle) && !name.toLowerCase().includes(needle)) continue;
+      if (!map.has(key)) map.set(key, { key, project: p || null, name, folders: p ? p.folders : [r.cwd], rooms: [] });
+      map.get(key).rooms.push(r);
     }
-    return [...map.entries()];
-  }, [rooms, q]);
+    if (!needle) for (const p of projects) if (!map.has(p.id)) map.set(p.id, { key: p.id, project: p, name: p.name, folders: p.folders, rooms: [] });
+    return [...map.values()];
+  }, [rooms, projects, q]);
 
   return (
     <aside class="sidebar">
@@ -214,7 +232,7 @@ function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, ref
       </button>
       <input class="search" type="search" placeholder="Поиск чатов" value={q} onInput={(e) => setQ(e.target.value)} />
       <nav class="rooms">
-        {groups.length === 0 && !found.length && <div class="rooms-empty">{rooms.length ? 'Ничего не найдено' : 'Чатов пока нет'}</div>}
+        {groups.length === 0 && !found.length && <div class="rooms-empty">{rooms.length ? 'Ничего не найдено' : 'Проектов и чатов пока нет'}</div>}
         {found.length > 0 && (
           <div class="group">
             <div class="group-title">
@@ -231,13 +249,32 @@ function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, ref
             ))}
           </div>
         )}
-        {groups.map(([cwd, list]) => (
-          <div class="group" key={cwd}>
-            <div class="group-title" title={cwd}>
-              <Icon name="folder" size={13} />
-              {baseName(cwd) || 'Без проекта'}
+        {groups.map((g) => (
+          <div class="group" key={g.key}>
+            <div class="group-title project-title" title={g.folders.join('\n')}>
+              <button class="group-toggle" onClick={() => toggle(g.key)}>
+                <Icon name={collapsed[g.key] ? 'right' : 'down'} size={12} />
+                <Icon name="folder" size={13} />
+                <span class="group-name">{g.name}</span>
+                {g.folders.length > 1 && <span class="group-count">{g.folders.length}</span>}
+              </button>
+              {g.project && (
+                <span class="group-actions">
+                  <button class="icon-btn tiny" title="Новый чат в проекте" onClick={() => onNewIn(g.project.id)}>
+                    <Icon name="plus" size={13} />
+                  </button>
+                  <button class="icon-btn tiny" title="Изменить проект: название и папки" onClick={() => onEditProject(g.project)}>
+                    <Icon name="settings" size={13} />
+                  </button>
+                </span>
+              )}
             </div>
-            {list.map((r) => (
+            {!collapsed[g.key] && g.rooms.length === 0 && (
+              <button class="room empty-room" onClick={() => onNewIn(g.project.id)}>
+                <Icon name="plus" size={13} /> Начать чат
+              </button>
+            )}
+            {!collapsed[g.key] && g.rooms.map((r) => (
               <button key={r.id} class={`room ${r.id === currentId ? 'active' : ''}`} onClick={() => onOpen(r.id)}>
                 <span class="room-title">{r.title}</span>
                 <span class="room-side">
@@ -251,6 +288,9 @@ function Sidebar({ rooms, currentId, onOpen, onNew, limits, onRefreshLimits, ref
           </div>
         ))}
       </nav>
+      <button class="new-project" onClick={() => onEditProject({ name: '', folders: [] })}>
+        <Icon name="folder" size={14} /> Новый проект
+      </button>
       <Limits limits={limits} onRefresh={onRefreshLimits} refreshing={refreshing} env={env} />
       <UpdateBanner update={update} />
       <div class="sidebar-foot">
@@ -368,8 +408,7 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
   const pickFile = (f) => {
     const before = text.slice(0, caret).replace(/@([^\s@]*)$/, '');
     setText(before + text.slice(caret));
-    const full = cwd.replace(/[\\/]+$/, '') + '/' + f.path;
-    addFiles([{ path: full, name: f.path, image: IMG.test(f.path), size: 0 }]);
+    addFiles([{ path: f.abs, name: f.path, image: IMG.test(f.path), size: 0 }]);
     setFileIndex(0);
     if (ref.current) ref.current.focus();
   };
@@ -713,7 +752,7 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
   );
 }
 
-function RoomHeader({ room, codexModels, onDelete, panel, setPanel }) {
+function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onEditProject }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(room.title);
   const [menu, setMenu] = useState(false);
@@ -750,9 +789,14 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel }) {
             {room.title}
           </h1>
         )}
-        <button class="project-chip" onClick={() => duo.openProject(room.cwd)} title={room.cwd}>
+        <button
+          class="project-chip"
+          onClick={() => (project ? onEditProject(project) : duo.openProject(room.cwd))}
+          title={project ? `Проект «${project.name}»:\n${project.folders.join('\n')}\n\nНажмите, чтобы изменить` : room.cwd}
+        >
           <Icon name="folder" size={13} />
-          {baseName(room.cwd)}
+          {project ? project.name : baseName(room.cwd)}
+          {project && project.folders.length > 1 && <small> · {project.folders.length} папки</small>}
         </button>
       </div>
       <div class="room-controls no-drag">
@@ -825,7 +869,7 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel }) {
   );
 }
 
-function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight }) {
+function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight, project, onEditProject }) {
   const [panel, setPanelState] = useState(() => store('panel') || '');
   const setPanel = (p) => {
     setPanelState(p);
@@ -876,7 +920,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
 
   return (
     <section class="room-view">
-      <RoomHeader room={room} codexModels={codexModels} onDelete={onDelete} panel={panel} setPanel={setPanel} />
+      <RoomHeader room={room} codexModels={codexModels} onDelete={onDelete} panel={panel} setPanel={setPanel} project={project} onEditProject={onEditProject} />
       <div class="room-body">
       <div class="room-main">
       <div class="scroll" ref={scrollRef} onScroll={onScroll} onClick={onClick}>
@@ -922,7 +966,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
         />
       </div>
       </div>
-      {panel && <SidePanel room={room} tab={panel} setTab={setPanel} onClose={() => setPanel('')} />}
+      {panel && <SidePanel room={room} folders={project ? [room.cwd, ...project.folders.filter((f) => f !== room.cwd)] : [room.cwd]} tab={panel} setTab={setPanel} onClose={() => setPanel('')} />}
       </div>
     </section>
   );
@@ -964,8 +1008,104 @@ function EnvWarning({ env }) {
   );
 }
 
-function NewChat({ settings, env, onCreated, focusTick }) {
-  const [project, setProject] = useState(settings.projects[0] || '');
+// Окно проекта: название и папки. Первая папка — основная, в ней запускаются агенты.
+export function ProjectEditor({ project, onClose, onSaved }) {
+  const [name, setName] = useState(project.name || '');
+  const [folders, setFolders] = useState(project.folders || []);
+  const [error, setError] = useState('');
+  const add = async () => {
+    const picked = await duo.pickFolders();
+    const next = [...folders, ...picked.filter((p) => !folders.includes(p))];
+    setFolders(next);
+    if (!name && next[0]) setName(baseName(next[0]));
+  };
+  const move = (i) => setFolders([folders[i], ...folders.filter((_, j) => j !== i)]);
+  const save = async () => {
+    try {
+      const p = await duo.saveProject({ id: project.id, name, folders });
+      onSaved && onSaved(p);
+      onClose();
+    } catch (err) {
+      setError(err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+    }
+  };
+  return (
+    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal">
+        <div class="modal-head">
+          <h2>{project.id ? 'Проект' : 'Новый проект'}</h2>
+          <button class="icon-btn" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div class="field">
+          <label>Название</label>
+          <input class="text-input" value={name} placeholder="Например, Магазин" onInput={(e) => setName(e.target.value)} autoFocus />
+        </div>
+        <div class="field">
+          <label>Папки</label>
+          {folders.length === 0 && <div class="field-hint">Добавьте одну или несколько папок — например, фронтенд и бэкенд, которые лежат в разных местах.</div>}
+          <ul class="folder-list">
+            {folders.map((f, i) => (
+              <li key={f}>
+                <Icon name="folder" size={14} />
+                <span class="folder-path" title={f}>
+                  <b>{baseName(f)}</b>
+                  <small>{f}</small>
+                </span>
+                {i === 0 ? (
+                  <span class="tag" title="Агенты запускаются в этой папке">основная</span>
+                ) : (
+                  <button class="link small" onClick={() => move(i)} title="Агенты будут запускаться в этой папке">
+                    сделать основной
+                  </button>
+                )}
+                <button class="icon-btn tiny" title="Убрать из проекта (файлы не удаляются)" onClick={() => setFolders(folders.filter((_, j) => j !== i))}>
+                  <Icon name="x" size={13} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button class="btn small" onClick={add}>
+            <Icon name="plus" size={14} /> Добавить папки…
+          </button>
+          <div class="field-hint">
+            Агенты работают в основной папке и видят остальные: читают, правят, запускают команды. Откат правок, поиск @файлов и панель Git охватывают все папки. Сменить основную папку —
+            значит для новых чатов; старые чаты продолжат работать там, где начинали.
+          </div>
+        </div>
+        {error && <div class="error-box">{error}</div>}
+        <div class="modal-actions">
+          {project.id && (
+            <button
+              class="btn ghost danger-text"
+              onClick={async () => {
+                if (!confirm(`Убрать проект «${project.name}» из списка? Папки и файлы не удаляются, чаты останутся.`)) return;
+                await duo.removeProject(project.id);
+                onClose();
+              }}
+            >
+              Убрать проект
+            </button>
+          )}
+          <span class="spacer" />
+          <button class="btn ghost" onClick={onClose}>
+            Отмена
+          </button>
+          <button class="btn primary" disabled={!folders.length} onClick={save}>
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditProject }) {
+  const workspaces = settings.workspaces || [];
+  const [projectId, setProjectId] = useState(initialProject || (workspaces[0] && workspaces[0].id) || '');
+  const current = workspaces.find((p) => p.id === projectId) || null;
+  const project = current ? current.folders[0] : '';
   const [target, setTarget] = useState(store('target:new') || 'both');
   const [history, setHistory] = useState([]);
   const [showAll, setShowAll] = useState(false);
@@ -978,22 +1118,15 @@ function NewChat({ settings, env, onCreated, focusTick }) {
     duo.history().then(setHistory);
   }, []);
   useEffect(() => {
-    if (!project && settings.projects[0]) setProject(settings.projects[0]);
-  }, [settings.projects]);
-
-  const pick = async () => {
-    const dir = await duo.pickProject();
-    if (dir) setProject(dir);
-  };
+    if (initialProject) setProjectId(initialProject);
+  }, [initialProject]);
+  useEffect(() => {
+    if (!current && workspaces[0]) setProjectId(workspaces[0].id);
+  }, [workspaces.length]);
 
   const send = async (text, agents, opts = {}) => {
-    let cwd = project;
-    if (!cwd) {
-      cwd = await duo.pickProject();
-      if (!cwd) return;
-      setProject(cwd);
-    }
-    const room = await duo.createRoom({ cwd });
+    if (!current) return onEditProject({ name: '', folders: [] }, (p) => setProjectId(p.id));
+    const room = await duo.createRoom({ projectId: current.id });
     await duo.send(room.id, { text, targets: agents, ...opts });
     store(`target:${room.id}`, target);
     onCreated(room.id);
@@ -1004,7 +1137,6 @@ function NewChat({ settings, env, onCreated, focusTick }) {
     onCreated(room.id);
   };
 
-  const projects = [...new Set([project, ...settings.projects].filter(Boolean))];
   const list = showAll ? history : history.slice(0, 6);
 
   return (
@@ -1022,24 +1154,39 @@ function NewChat({ settings, env, onCreated, focusTick }) {
         <EnvWarning env={env} />
         <div class="project-row">
           <Icon name="folder" size={15} />
-          {projects.length ? (
+          {workspaces.length ? (
             <label class="select project-select">
-              <select value={project} onChange={(e) => setProject(e.target.value)}>
-                {projects.map((p) => (
-                  <option value={p} key={p}>
-                    {baseName(p)} — {p}
+              <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+                {workspaces.map((p) => (
+                  <option value={p.id} key={p.id}>
+                    {p.name} — {p.folders.length > 1 ? `${p.folders.length} папки` : p.folders[0]}
                   </option>
                 ))}
               </select>
               <Icon name="down" size={13} />
             </label>
           ) : (
-            <span class="muted">Папка проекта не выбрана</span>
+            <span class="muted">Проектов пока нет</span>
           )}
-          <button class="btn" onClick={pick}>
-            Выбрать папку…
+          {current && (
+            <button class="btn" onClick={() => onEditProject(current)} title="Название и папки проекта">
+              Изменить
+            </button>
+          )}
+          <button class="btn" onClick={() => onEditProject({ name: '', folders: [] }, (p) => setProjectId(p.id))}>
+            Новый проект…
           </button>
         </div>
+        {current && current.folders.length > 1 && (
+          <div class="project-folders">
+            {current.folders.map((f, i) => (
+              <span key={f} class="folder-chip" title={f}>
+                <Icon name="folder" size={12} /> {baseName(f)}
+                {i === 0 && <small> · основная</small>}
+              </span>
+            ))}
+          </div>
+        )}
         <Composer
           onSend={send}
           target={target}
@@ -1561,6 +1708,8 @@ function App() {
   const [showStats, setShowStats] = useState(false);
   const [highlight, setHighlight] = useState(null);
   const [focusTick, setFocusTick] = useState(0);
+  const [newIn, setNewIn] = useState(null);
+  const [editing, setEditing] = useState(null); // { project, after }
   const currentRef = useRef(null);
   currentRef.current = currentId;
 
@@ -1670,6 +1819,13 @@ function App() {
         env={env}
         update={update}
         onStats={() => setShowStats(true)}
+        projects={settings.workspaces || []}
+        onNewIn={(id) => {
+          setNewIn(id);
+          open(null);
+          setFocusTick((t) => t + 1);
+        }}
+        onEditProject={(project) => setEditing({ project })}
         onSettings={() => {
           loadSettings();
           setShowSettings(true);
@@ -1677,10 +1833,22 @@ function App() {
       />
       <main class="main">
         {room ? (
-          <RoomView key={room.id} room={room} codexModels={codexModels} onDelete={removeRoom} pipelines={settings.pipelines || []} focusTick={focusTick} highlight={highlight} />
+          <RoomView
+            key={room.id}
+            room={room}
+            codexModels={codexModels}
+            onDelete={removeRoom}
+            pipelines={settings.pipelines || []}
+            focusTick={focusTick}
+            highlight={highlight}
+            project={(settings.workspaces || []).find((p) => p.id === room.projectId) || null}
+            onEditProject={(project) => setEditing({ project })}
+          />
         ) : (
           <NewChat
             focusTick={focusTick}
+            initialProject={newIn}
+            onEditProject={(project, after) => setEditing({ project, after })}
             settings={settings}
             env={env}
             onCreated={(id) => {
@@ -1690,6 +1858,17 @@ function App() {
           />
         )}
       </main>
+      {editing && (
+        <ProjectEditor
+          project={editing.project}
+          onClose={() => setEditing(null)}
+          onSaved={(p) => {
+            loadSettings();
+            if (editing.after) editing.after(p);
+            else if (!editing.project.id) setNewIn(p.id);
+          }}
+        />
+      )}
       {showStats && <StatsModal onClose={() => setShowStats(false)} onOpenRoom={(id) => open(id)} />}
       {showSettings && <Settings settings={settings} env={env} update={update} onUpdate={(u) => u && setUpdate({ ...u })} onClose={() => setShowSettings(false)} onSaved={loadSettings} />}
     </div>

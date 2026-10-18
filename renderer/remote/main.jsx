@@ -107,7 +107,11 @@ function Limits({ limits }) {
   );
 }
 
-function Home({ rooms, limits, onOpen, onNew }) {
+function Home({ rooms, limits, onOpen, onNew, projects = [] }) {
+  const nameOf = (r) => {
+    const p = projects.find((x) => x.id === r.projectId);
+    return p ? p.name : baseName(r.cwd);
+  };
   return (
     <div class="m-screen">
       <Limits limits={limits} />
@@ -122,7 +126,7 @@ function Home({ rooms, limits, onOpen, onNew }) {
             <span class="m-room-main">
               <b>{r.title}</b>
               <small>
-                <Icon name="folder" size={12} /> {baseName(r.cwd)}
+                <Icon name="folder" size={12} /> {nameOf(r)}
               </small>
             </span>
             <span class="room-side">
@@ -143,9 +147,9 @@ function NewChat({ onCreated }) {
   useEffect(() => {
     duo.projects().then(setProjects);
   }, []);
-  const create = async (cwd) => {
+  const create = async (projectId) => {
     haptic();
-    const room = await duo.createRoom({ cwd });
+    const room = await duo.createRoom({ projectId });
     onCreated(room.id);
   };
   return (
@@ -153,12 +157,12 @@ function NewChat({ onCreated }) {
       <div class="section pad">Проект</div>
       <div class="m-list">
         {!projects && <div class="muted pad">Загрузка…</div>}
-        {projects && projects.length === 0 && <div class="muted pad">Сначала откройте папку проекта в DuoCode на компьютере.</div>}
+        {projects && projects.length === 0 && <div class="muted pad">Сначала создайте проект в DuoCode на компьютере.</div>}
         {(projects || []).map((p) => (
-          <button key={p} class="m-room" onClick={() => create(p)}>
+          <button key={p.id} class="m-room" onClick={() => create(p.id)}>
             <span class="m-room-main">
-              <b>{baseName(p)}</b>
-              <small>{p}</small>
+              <b>{p.name}</b>
+              <small>{p.folders.length > 1 ? `${p.folders.length} папки: ${p.folders.map(baseName).join(', ')}` : p.folders[0]}</small>
             </span>
             <Icon name="right" size={16} />
           </button>
@@ -325,6 +329,7 @@ function App() {
   const [limits, setLimits] = useState({});
   const [status, setStatus] = useState('connecting');
   const [error, setError] = useState(null);
+  const [projects, setProjects] = useState([]);
   const current = useRef(null);
 
   const openRoom = async (id) => {
@@ -336,9 +341,10 @@ function App() {
   useEffect(() => {
     applyTheme();
     if (tg) tg.onEvent('themeChanged', applyTheme);
-    Promise.all([duo.listRooms(), duo.limits()])
-      .then(([r, l]) => {
+    Promise.all([duo.listRooms(), duo.limits(), duo.projects()])
+      .then(([r, l, p]) => {
         setRooms(r);
+        setProjects(p || []);
         setLimits(l || {});
         setStatus('online');
         duo.connect();
@@ -426,7 +432,7 @@ function App() {
     <PrefsContext.Provider value={PREFS}>
       <div class="m-app">
         {status === 'offline' && <div class="m-offline">Нет связи с компьютером — переподключаюсь…</div>}
-        {screen === 'home' && <Home rooms={rooms} limits={limits} onOpen={openRoom} onNew={() => setScreen('new')} />}
+        {screen === 'home' && <Home rooms={rooms} limits={limits} projects={projects} onOpen={openRoom} onNew={() => setScreen('new')} />}
         {screen === 'new' && <NewChat onCreated={openRoom} />}
         {screen === 'room' && room && <Room room={room} key={room.id} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
       </div>

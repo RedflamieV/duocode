@@ -1326,3 +1326,32 @@ code.tool-sub { font-size: 12px; }
 .chat-control code { font-size: 11.5px; }
 
 .msg.user.local .bubble { opacity: 0.7; }
+
+/* ---------- Проекты ---------- */
+
+.project-title { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding-right: 2px; }
+.group-toggle { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; color: var(--faint); font-weight: 600; font-size: 12px; text-align: left; }
+.group-toggle:hover { color: var(--text); }
+.group-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.group-count { font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); font-weight: 500; }
+.group-actions { display: none; gap: 1px; }
+.group:hover .group-actions { display: inline-flex; }
+.icon-btn.tiny { width: 22px; height: 22px; border-radius: 6px; }
+.empty-room { color: var(--faint); font-size: 12.5px; gap: 6px; }
+.new-project { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; margin: 4px 0 2px; border-radius: 8px; color: var(--muted); font-size: 13px; }
+.new-project:hover { background: var(--hover); color: var(--text); }
+.folder-list { list-style: none; margin: 4px 0 10px; padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.folder-list:empty { display: none; }
+.folder-list li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.folder-list li:last-child { border-bottom: 0; }
+.folder-path { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.folder-path b { font-weight: 550; }
+.folder-path small { color: var(--faint); font-size: 11.5px; font-family: var(--mono); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.modal-actions .spacer { flex: 1; }
+.danger-text { color: var(--danger) !important; }
+.project-folders { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 10px 23px; }
+.folder-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+.folder-chip small { color: var(--faint); }
+.project-chip small { color: var(--faint); }
+.folder-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 0; }
+.chip-btn.active { color: var(--text); border-color: var(--border-strong); background: var(--hover); }
