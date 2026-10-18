@@ -3,9 +3,10 @@
 // Безопасность: бот слушается только одного аккаунта — по Telegram ID из настроек, и только в личном чате.
 // Всё остальное игнорируется, а о попытках чужих аккаунтов DuoCode сообщает владельцу.
 const { EventEmitter } = require('events');
+const { esc, plain } = require('./tgformat');
 
-const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+const LIMIT = 4096;
 
 class Telegram extends EventEmitter {
   constructor() {
@@ -31,6 +32,20 @@ class Telegram extends EventEmitter {
 
   get chatId() {
     return this.userId;
+  }
+
+  // Сообщение с HTML-разметкой. Если обрезка порвала бы теги или Telegram не принял разметку,
+  // отправляем тот же текст без оформления — лучше без выделения, чем потерять ответ.
+  async rich(method, html, params) {
+    const text = plain(html);
+    if (html.length <= LIMIT) {
+      try {
+        return await this.api(method, { ...params, text: html, parse_mode: 'HTML' });
+      } catch (err) {
+        if (!/parse entities|can't find end|unsupported start tag|message is too long/i.test(err.message)) throw err;
+      }
+    }
+    return this.api(method, { ...params, text: clip(text, LIMIT) });
   }
 
   async api(method, params = {}) {
@@ -163,21 +178,17 @@ class Telegram extends EventEmitter {
 
   say(html, buttons) {
     if (!this.token || !this.userId) return Promise.resolve(null);
-    return this.api('sendMessage', {
+    return this.rich('sendMessage', html, {
       chat_id: this.userId,
-      text: clip(html, 4000),
-      parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
     }).catch(() => null);
   }
 
   edit(messageId, html, buttons) {
-    return this.api('editMessageText', {
+    return this.rich('editMessageText', html, {
       chat_id: this.userId,
       message_id: messageId,
-      text: clip(html, 4000),
-      parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: buttons ? { inline_keyboard: buttons } : undefined,
     }).catch(() => null);
@@ -219,10 +230,8 @@ class Telegram extends EventEmitter {
   async send(html, { roomId, buttons } = {}) {
     if (!this.token || !this.userId) return null;
     try {
-      const msg = await this.api('sendMessage', {
+      const msg = await this.rich('sendMessage', html, {
         chat_id: this.userId,
-        text: clip(html, 4000),
-        parse_mode: 'HTML',
         disable_web_page_preview: true,
         reply_markup: (() => {
           const rows = buttons ? [...buttons] : [];

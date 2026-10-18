@@ -17,6 +17,7 @@ const { searchFiles } = require('./src/files');
 const projects = require('./src/projects');
 const memory = require('./src/memory');
 const { Telegram, esc, clip } = require('./src/telegram');
+const { toTelegram, quote, plain } = require('./src/tgformat');
 const { RemoteServer, Tunnel } = require('./src/remote');
 
 fixPath();
@@ -621,7 +622,7 @@ async function botButton({ action, value, messageId }) {
     setBot({ activeRoom: room.id });
     followed.set(room.id, Date.now() + 6 * 3600 * 1000);
     const last = [...room.messages].reverse().find((m) => m.role === 'agent' && !m.parentId && m.finalText);
-    const tail = last ? `\n\nПоследний ответ ${last.agent === 'claude' ? 'Claude' : 'Codex'}:\n<i>${esc(clip(last.finalText, 600))}</i>` : '';
+    const tail = last ? `\n\nПоследний ответ ${last.agent === 'claude' ? 'Claude' : 'Codex'}:\n${quote(clip(last.finalText, 600))}` : '';
     return tg.edit(messageId, `✅ Чат «<b>${esc(room.title)}</b>» (${esc(path.basename(room.cwd))}).\nПишите задачу — она уйдёт: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>.${tail}`, targetButtons());
   }
   if (action === 'to') {
@@ -662,7 +663,7 @@ function trackProgress(roomId, msgs) {
     }
     const steps = m.parts.map(stepLine).filter(Boolean).slice(-6);
     const secs = Math.round((Date.now() - m.ts) / 1000);
-    const draft = m.draft && m.draftKind !== 'thinking' ? `\n\n<i>${esc(clip(m.draft.slice(-300), 300))}</i>` : '';
+    const draft = m.draft && m.draftKind !== 'thinking' ? `\n\n<i>${esc(plain(toTelegram(m.draft.slice(-300))))}</i>` : '';
     const text = `⏳ <b>${who}</b> работает · ${secs < 60 ? secs + ' с' : Math.floor(secs / 60) + ' мин'}\n${steps.join('\n')}${draft}`;
     const buttons = [[{ text: '⏹ Остановить', callback_data: `c|stop|${roomId}` }]];
     if (!st) {
@@ -702,7 +703,7 @@ function telegramAttention(room, msg, part) {
   const isPlan = part.plan !== undefined;
   let body = esc(part.title);
   if (part.command) body += `\n<pre>${esc(clip(part.command, 1500))}</pre>`;
-  else if (part.plan) body += `\n\n${esc(clip(part.plan, 2500))}`;
+  else if (part.plan) body += `\n\n${toTelegram(clip(part.plan, 2500))}`;
   else if (part.subtitle) body += `\n<code>${esc(clip(part.subtitle, 500))}</code>`;
   const cb = (d) => `a|${room.id}|${part.id}|${d}`;
   const buttons = isPlan
@@ -723,8 +724,8 @@ function telegramFinished(room, msg) {
   if (!settings.telegram.notifyFinish && !isFollowed) return;
   const who = msg.agent === 'claude' ? 'Claude' : 'Codex';
   const icon = msg.status === 'error' ? '⚠️' : msg.status === 'stopped' ? '⏹' : '✅';
-  const text = msg.error ? `Ошибка: ${msg.error}` : msg.finalText || '';
-  tg.send(`${icon} <b>${who}</b> · ${esc(room.title)}\n\n${esc(clip(text, isFollowed ? 3500 : 1500))}`, { roomId: room.id });
+  const body = msg.error ? esc(`Ошибка: ${msg.error}`) : toTelegram(clip(msg.finalText || '', isFollowed ? 3500 : 1500));
+  tg.send(`${icon} <b>${who}</b> · ${esc(room.title)}\n\n${body}`, { roomId: room.id });
 }
 
 // ---------- Мини-приложение Telegram ----------
