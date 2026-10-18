@@ -42,7 +42,10 @@ function save(settings, input) {
   const name = String(input.name || '').trim() || path.basename(folders[0]);
   const all = list(settings);
   const i = all.findIndex((p) => p.id === input.id);
-  const project = { ...(i >= 0 ? all[i] : { id: newId(), createdAt: Date.now() }), name, folders };
+  const prev = i >= 0 ? all[i] : { id: newId(), createdAt: Date.now() };
+  // инструкции проекта для агентов (Настройки проекта)
+  const instructions = input.instructions !== undefined ? String(input.instructions || '').trim() : prev.instructions || '';
+  const project = { ...prev, name, folders, instructions };
   settings.workspaces = i >= 0 ? all.map((p, j) => (j === i ? project : p)) : [project, ...all];
   return project;
 }

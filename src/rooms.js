@@ -37,6 +37,33 @@ const INSTRUCTIONS = {
 - Reply in the language the user writes in.`,
 };
 
+// Язык ответов (Настройки → Агенты). Инструкции DuoCode — на английском, а вокруг много английского
+// (вывод команд, код), поэтому мягкого «отвечай на языке пользователя» бывает мало.
+const LANGUAGE = {
+  ru: '- Language: always reply to the user in Russian, even when the user, these instructions, tool output or code are in another language. Keep code, identifiers, commands and file paths as they are.',
+  auto: '- Reply in the language the user writes in.',
+  en: '- Language: always reply to the user in English, even when the user, the chat history or the instructions above are in another language. Keep code, identifiers, commands and file paths as they are.',
+};
+
+// Что задаёт пользователь: язык ответов и свои инструкции (общие и проекта).
+function standing(settings, project) {
+  let text = '';
+  const own = [
+    settings.instructions && settings.instructions.trim() && `For all chats:\n${settings.instructions.trim()}`,
+    project && project.instructions && project.instructions.trim() && `For the project "${project.name}":\n${project.instructions.trim()}`,
+  ].filter(Boolean);
+  if (own.length) {
+    text += `<user_instructions>\nThe user's own standing instructions. Follow them unless a direct request in the chat says otherwise.\n\n${own.join('\n\n')}\n</user_instructions>\n\n`;
+  }
+  // язык — последним: так модель держится за него лучше
+  return text + (LANGUAGE[settings.language] || LANGUAGE.ru);
+}
+
+// Постоянная подсказка агента: инструкции DuoCode + то, что задал пользователь.
+function systemPrompt(agent, settings, project) {
+  return INSTRUCTIONS[agent].replace('- Reply in the language the user writes in.', standing(settings, project));
+}
+
 class Rooms extends EventEmitter {
   constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, pickAgent }) {
     super();
@@ -676,6 +703,17 @@ class Rooms extends EventEmitter {
       const seen = room.memorySeen;
       const digest = (s) => (s ? crypto.createHash('sha1').update(s).digest('hex') : '');
       let prefix = '';
+      const sys = systemPrompt(agent, settings, folders.project);
+      // Codex получает инструкции при запуске треда; если тред уже загружен, а инструкции поменялись —
+      // сообщаем об этом в сообщении один раз
+      const sysHash = digest(sys);
+      if (agent === 'codex' && !raw && !isolated) {
+        const loaded = room.sessions.codex && this.codex.loaded && this.codex.loaded.has(room.sessions.codex);
+        if (loaded && seen.codexSys && seen.codexSys !== sysHash) {
+          prefix += `[The user updated the standing instructions in DuoCode. From now on follow these:\n${standing(settings, folders.project)}]\n\n`;
+        }
+        seen.codexSys = sysHash;
+      }
       if (!raw) {
         const memHash = digest(memoryBlock);
         if (memoryBlock && (isolated || seen[agent] !== memHash)) prefix += `${memoryBlock}\n\n`;
@@ -697,7 +735,11 @@ class Rooms extends EventEmitter {
             },
           }),
         );
-        fs.writeFileSync(promptFile, INSTRUCTIONS.claude);
+        fs.writeFileSync(promptFile, sys);
+        // язык ответов ещё и встроенной настройкой Claude Code: она надёжнее держит русский
+        const lang = { ru: 'russian', en: 'english' }[settings.language || 'ru'];
+        const settingsFile = lang ? path.join(this.runDir, `claude-${lang}.json`) : null;
+        if (settingsFile && !fs.existsSync(settingsFile)) fs.writeFileSync(settingsFile, JSON.stringify({ language: lang }));
         handle = runClaude({
           command: settings.claudeCommand,
           prompt: prefix + fullPrompt,
@@ -711,6 +753,7 @@ class Rooms extends EventEmitter {
           effort: runEffort,
           mcpConfigPath: mcpFile,
           systemPromptPath: promptFile,
+          settingsPath: settingsFile,
           addDirs: isolated ? [] : folders.extra,
         });
       } else {
@@ -728,7 +771,7 @@ class Rooms extends EventEmitter {
           model: runModel,
           effort: runEffort,
           writableRoots: isolated ? [] : folders.extra,
-          instructions: INSTRUCTIONS.codex,
+          instructions: sys,
           config: {
             'mcp_servers.duo': {
               command: this.bridge.command,

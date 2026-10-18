@@ -95,10 +95,12 @@ function resultText(content) {
  *  done({ text, error, cost, usage })
  * ev.steer(text, attachments) дописывает сообщение в идущую работу; false — если процесс уже закрывается.
  */
-function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, env, addDirs = [] }) {
+function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, settingsPath, env, addDirs = [] }) {
   const ev = new EventEmitter();
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   args.push('--mcp-config', mcpConfigPath, '--append-system-prompt-file', systemPromptPath);
+  // дополнительные настройки Claude Code (например, язык ответов) — добавляются к настройкам пользователя
+  if (settingsPath) args.push('--settings', settingsPath);
   args.push('--allowedTools', 'mcp__duo__ask_codex', 'mcp__duo__remember');
   // в режиме плана Claude сам вызывает ExitPlanMode, а DuoCode показывает план на утверждение
   if (plan) args.push('--permission-mode', 'plan', '--permission-prompt-tool', 'mcp__duo__approve');

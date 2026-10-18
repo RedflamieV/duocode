@@ -1056,6 +1056,7 @@ function EnvWarning({ env }) {
 export function ProjectEditor({ project, onClose, onSaved }) {
   const [name, setName] = useState(project.name || '');
   const [folders, setFolders] = useState(project.folders || []);
+  const [instructions, setInstructions] = useState(project.instructions || '');
   const [error, setError] = useState('');
   const add = async () => {
     const picked = await duo.pickFolders();
@@ -1066,7 +1067,7 @@ export function ProjectEditor({ project, onClose, onSaved }) {
   const move = (i) => setFolders([folders[i], ...folders.filter((_, j) => j !== i)]);
   const save = async () => {
     try {
-      const p = await duo.saveProject({ id: project.id, name, folders });
+      const p = await duo.saveProject({ id: project.id, name, folders, instructions });
       onSaved && onSaved(p);
       onClose();
     } catch (err) {
@@ -1117,6 +1118,17 @@ export function ProjectEditor({ project, onClose, onSaved }) {
             Агенты работают в основной папке и видят остальные: читают, правят, запускают команды. Откат правок, поиск @файлов и панель Git охватывают все папки. Сменить основную папку —
             значит для новых чатов; старые чаты продолжат работать там, где начинали.
           </div>
+        </div>
+        <div class="field">
+          <label>Инструкции для агентов в этом проекте</label>
+          <textarea
+            class="instr-text"
+            rows={4}
+            value={instructions}
+            onInput={(e) => setInstructions(e.target.value)}
+            placeholder={'Например:\n— стек: React + Express, тесты — npm test\n— не трогай папку legacy/'}
+          />
+          <div class="field-hint">Добавляются к общим инструкциям из Настроек → Агенты, только в чатах этого проекта.</div>
         </div>
         {error && <div class="error-box">{error}</div>}
         <div class="modal-actions">
@@ -1401,6 +1413,9 @@ function AgentsTab({ settings, env, onSaved }) {
     </div>
   );
   const nc = settings.newChat || {};
+  const [instr, setInstr] = useState(settings.instructions || '');
+  const instrDirty = instr.trim() !== (settings.instructions || '').trim();
+  const saveInstr = () => duo.setSettings({ instructions: instr.trim() }).then(onSaved);
   const [codexModels, setCodexModels] = useState([]);
   useEffect(() => {
     duo.codexModels().then((m) => setCodexModels(m || [])).catch(() => {});
@@ -1464,6 +1479,42 @@ function AgentsTab({ settings, env, onSaved }) {
             {applied ? 'Применено ко всем чатам' : 'Применить эти настройки ко всем чатам'}
           </button>
         </div>
+      </div>
+      <div class="field">
+        <label>Язык ответов</label>
+        <Segmented
+          value={settings.language || 'ru'}
+          onChange={(v) => duo.setSettings({ language: v }).then(onSaved)}
+          options={[
+            { id: 'ru', name: 'Русский' },
+            { id: 'auto', name: 'Как я пишу' },
+            { id: 'en', name: 'English' },
+          ]}
+        />
+        <div class="field-hint">Агенты отвечают на этом языке, даже если вокруг английский код и вывод команд. Код, команды и пути остаются как есть.</div>
+      </div>
+      <div class="field">
+        <label>Свои инструкции для агентов</label>
+        <textarea
+          class="instr-text"
+          rows={5}
+          value={instr}
+          onInput={(e) => setInstr(e.target.value)}
+          placeholder={'Например:\n— объясняй простыми словами, без воды\n— перед большими правками сначала покажи план\n— комментарии в коде пиши на русском'}
+        />
+        <div class="field-hint">
+          Действуют для Claude и Codex во всех чатах. Свои инструкции есть и у каждого проекта — в его настройках (значок у названия проекта в списке).
+        </div>
+        {instrDirty && (
+          <div class="modal-actions">
+            <button class="btn ghost" onClick={() => setInstr(settings.instructions || '')}>
+              Отменить
+            </button>
+            <button class="btn primary" onClick={saveInstr}>
+              Сохранить инструкции
+            </button>
+          </div>
+        )}
       </div>
       {row('claude', claude, setClaude)}
       {row('codex', codex, setCodex)}
