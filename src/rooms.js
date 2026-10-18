@@ -136,8 +136,11 @@ class Rooms extends EventEmitter {
   rename(id, title) {
     const room = this.rooms.get(id);
     if (!room) return;
-    room.title = short(title.trim(), 80) || room.title;
-    this.touch(room);
+    room.title = short(String(title || '').trim(), 80) || room.title;
+    // переименование не поднимает чат наверх списка
+    this.store.save(room);
+    this.emitRooms();
+    return this.get(id);
   }
 
   updateSettings(id, patch) {
@@ -199,6 +202,8 @@ class Rooms extends EventEmitter {
     for (const agent of fresh) {
       const key = `${room.id}:${agent}`;
       const job = { prompt: text, attachments, plan, userMsgId: userMsg.id };
+      // «Авто» может задавать свою модель и уровень размышлений (Настройки → Агенты)
+      if (routed && routed.agent === agent) Object.assign(job, { model: routed.model || null, effort: routed.effort || null });
       if (this.main.has(key)) {
         if (!this.queues.has(key)) this.queues.set(key, []);
         this.queues.get(key).push(job);
@@ -533,6 +538,11 @@ class Rooms extends EventEmitter {
 
   runAgent(room, agent, opts) {
     const { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null, cwd = null, isolated = false, duelId = null, pipeline = null } = opts;
+    // модель и размышления: заданные для хода (кнопка «Авто») или из настроек чата.
+    // Если для хода задана только модель, уровень берём её собственный — чатовый может ей не подходить.
+    const s = room.settings;
+    const runModel = opts.model || (agent === 'claude' ? s.claudeModel : s.codexModel) || '';
+    const runEffort = opts.effort || (opts.model ? '' : (agent === 'claude' ? s.claudeEffort : s.codexEffort) || '');
     const key = `${room.id}:${agent}`;
     const fork = isolated || this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
     const workDir = cwd || room.cwd;
@@ -551,7 +561,7 @@ class Rooms extends EventEmitter {
       plan,
       duelId,
       pipeline,
-      effort: (agent === 'claude' ? room.settings.claudeEffort : room.settings.codexEffort) || null,
+      effort: runEffort || null,
     };
     room.messages.push(msg);
     if (!fork) this.main.set(key, msg.id);
@@ -693,8 +703,8 @@ class Rooms extends EventEmitter {
           sessionId: isolated ? null : room.sessions.claude,
           fork: fork && !isolated && !!room.sessions.claude,
           mode: room.settings.mode,
-          model: room.settings.claudeModel,
-          effort: room.settings.claudeEffort,
+          model: runModel,
+          effort: runEffort,
           mcpConfigPath: mcpFile,
           systemPromptPath: promptFile,
           addDirs: isolated ? [] : folders.extra,
@@ -711,8 +721,8 @@ class Rooms extends EventEmitter {
           fork: fork && !!room.sessions.codex,
           cwd: workDir,
           mode: room.settings.mode,
-          model: room.settings.codexModel,
-          effort: room.settings.codexEffort,
+          model: runModel,
+          effort: runEffort,
           writableRoots: isolated ? [] : folders.extra,
           instructions: INSTRUCTIONS.codex,
           config: {

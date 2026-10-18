@@ -4,6 +4,7 @@ import { PrefsContext, DEFAULT_PREFS, applyPrefs } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { Attachments } from './attachments.jsx';
 import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
+import { TitleInput } from './titleinput.jsx';
 import { SidePanel, StatsModal } from './panels.jsx';
 
 const duo = window.duo;
@@ -185,7 +186,19 @@ function UpdateBanner({ update }) {
   );
 }
 
-function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEditProject, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
+function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEditProject, onDeleteRoom, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
+  const [renaming, setRenaming] = useState(null); // id чата, который переименовывают
+  const [ctx, setCtx] = useState(null); // контекстное меню чата: { id, x, y }
+  useEffect(() => {
+    if (!ctx) return;
+    const close = () => setCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('blur', close);
+    };
+  }, [ctx]);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return JSON.parse(store('collapsed') || '{}');
@@ -279,9 +292,34 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
                 <Icon name="plus" size={13} /> Начать чат
               </button>
             )}
-            {!collapsed[g.key] && g.rooms.map((r) => (
-              <button key={r.id} class={`room ${r.id === currentId ? 'active' : ''}`} onClick={() => onOpen(r.id)}>
+            {!collapsed[g.key] && g.rooms.map((r) =>
+              renaming === r.id ? (
+                <div key={r.id} class={`room editing ${r.id === currentId ? 'active' : ''}`}>
+                  <TitleInput class="room-input" value={r.title} onSave={(t) => duo.renameRoom(r.id, t)} onDone={() => setRenaming(null)} />
+                </div>
+              ) : (
+              <button
+                key={r.id}
+                class={`room ${r.id === currentId ? 'active' : ''}`}
+                onClick={() => onOpen(r.id)}
+                onDblClick={() => setRenaming(r.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setCtx({ id: r.id, x: e.clientX, y: e.clientY });
+                }}
+                title="Двойной щелчок — переименовать, правая кнопка — меню"
+              >
                 <span class="room-title">{r.title}</span>
+                <span
+                  class="room-edit"
+                  title="Переименовать"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenaming(r.id);
+                  }}
+                >
+                  <Icon name="edit" size={12} />
+                </span>
                 <span class="room-side">
                   {r.waiting && <span class="waiting" title="Ждёт вашего подтверждения" />}
                   {r.running.claude && <i class="pulse claude" title="Claude работает" />}
@@ -289,10 +327,21 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
                   {!r.running.claude && !r.running.codex && !r.waiting && <span class="room-time">{fmtAgo(r.updatedAt)}</span>}
                 </span>
               </button>
-            ))}
+              ),
+            )}
           </div>
         ))}
       </nav>
+      {ctx && (
+        <div class="menu context-menu" style={{ left: ctx.x, top: ctx.y, right: 'auto' }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => { setRenaming(ctx.id); setCtx(null); }}>
+            <Icon name="edit" size={14} /> Переименовать
+          </button>
+          <button class="danger" onClick={() => { onDeleteRoom(ctx.id); setCtx(null); }}>
+            <Icon name="trash" size={14} /> Удалить чат
+          </button>
+        </div>
+      )}
       <button class="new-project" onClick={() => onEditProject({ name: '', folders: [] })}>
         <Icon name="folder" size={14} /> Новый проект
       </button>
@@ -380,7 +429,9 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
   const ref = useRef();
 
   useEffect(() => {
-    if (autoFocus && ref.current) ref.current.focus();
+    // не перехватываем фокус у другого поля (например, переименования чата в списке)
+    const busy = document.activeElement && document.activeElement.tagName === 'INPUT';
+    if (autoFocus && ref.current && !busy) ref.current.focus();
   }, [autoFocus, focusTick]);
 
   useEffect(() => {
@@ -759,9 +810,8 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
 
 function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onEditProject }) {
   const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState(room.title);
   const [menu, setMenu] = useState(false);
-  useEffect(() => setTitle(room.title), [room.title]);
+  useEffect(() => setEditing(false), [room.id]);
   const s = room.settings;
   const set = (patch) => duo.setRoomSettings(room.id, patch);
   const mode = MODES.find((m) => m.id === s.mode) || MODES[0];
@@ -772,27 +822,16 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
     <header class="room-header drag">
       <div class="room-heading no-drag">
         {editing ? (
-          <input
-            class="title-input"
-            value={title}
-            autoFocus
-            onInput={(e) => setTitle(e.target.value)}
-            onBlur={() => {
-              setEditing(false);
-              duo.renameRoom(room.id, title);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') e.target.blur();
-              if (e.key === 'Escape') {
-                setTitle(room.title);
-                setEditing(false);
-              }
-            }}
-          />
+          <TitleInput value={room.title} onSave={(t) => duo.renameRoom(room.id, t)} onDone={() => setEditing(false)} />
         ) : (
-          <h1 onDblClick={() => setEditing(true)} title="Дважды щёлкните, чтобы переименовать">
-            {room.title}
-          </h1>
+          <>
+            <h1 onDblClick={() => setEditing(true)} title="Дважды щёлкните, чтобы переименовать">
+              {room.title}
+            </h1>
+            <button class="icon-btn tiny title-edit" title="Переименовать" onClick={() => setEditing(true)}>
+              <Icon name="edit" size={13} />
+            </button>
+          </>
         )}
         <button
           class="project-chip"
@@ -1357,6 +1396,37 @@ function AgentsTab({ settings, env, onSaved }) {
     </div>
   );
   const nc = settings.newChat || {};
+  const auto = settings.auto || {};
+  const setAuto = (patch) => duo.setSettings({ auto: patch }).then(onSaved);
+  const [codexModels, setCodexModels] = useState([]);
+  useEffect(() => {
+    duo.codexModels().then((m) => setCodexModels(m || [])).catch(() => {});
+  }, []);
+  const SAME = { id: '', name: 'Как в чате' };
+  const effortName = (id) => (EFFORT_NAME[id] ? EFFORT_NAME[id][0].toUpperCase() + EFFORT_NAME[id].slice(1) : id);
+  const autoRow = (agent) => {
+    const models = agent === 'claude' ? CLAUDE_MODELS.slice(1) : codexModels.map((m) => ({ id: m.id, name: m.name }));
+    const efforts = agent === 'claude' ? CLAUDE_EFFORTS : codexEfforts(codexModels, auto.codexModel);
+    const model = auto[`${agent}Model`] || '';
+    const effort = auto[`${agent}Effort`] || '';
+    return (
+      <div class="auto-row">
+        <span class="auto-agent">
+          <Avatar agent={agent} size={16} /> {NAME[agent]}
+        </span>
+        <Select
+          value={model}
+          options={[SAME, ...models]}
+          title="Модель"
+          onChange={(v) => {
+            const ok = agent === 'claude' || !effort || codexEfforts(codexModels, v).some((e) => e.id === effort);
+            setAuto({ [`${agent}Model`]: v, ...(ok ? {} : { [`${agent}Effort`]: '' }) });
+          }}
+        />
+        <Select value={effort} options={[{ id: '', name: model ? 'По умолчанию модели' : 'Как в чате' }, ...efforts.map((e) => ({ id: e.id, name: effortName(e.id) }))]} title="Уровень размышлений" onChange={(v) => setAuto({ [`${agent}Effort`]: v })} />
+      </div>
+    );
+  };
   const mode = nc.mode || 'ask';
   const delegation = nc.delegation || 'auto';
   const setNew = (patch) => duo.setSettings({ newChat: patch }).then(onSaved);
@@ -1381,6 +1451,26 @@ function AgentsTab({ settings, env, onSaved }) {
           <button class="link" onClick={applyAll}>
             {applied ? 'Применено ко всем чатам' : 'Применить ко всем чатам'}
           </button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Кнопка «Авто» в поле ввода</label>
+        <Segmented
+          value={auto.agent || 'limits'}
+          onChange={(v) => setAuto({ agent: v })}
+          options={[
+            { id: 'limits', name: 'У кого больше лимита' },
+            { id: 'claude', name: 'Всегда Claude' },
+            { id: 'codex', name: 'Всегда Codex' },
+          ]}
+        />
+        {(auto.agent || 'limits') !== 'codex' && autoRow('claude')}
+        {(auto.agent || 'limits') !== 'claude' && autoRow('codex')}
+        <div class="field-hint">
+          {(auto.agent || 'limits') === 'limits'
+            ? 'Задача уходит тому, у кого сейчас меньше занято лимита (5-часовое и недельное окно), с выбранной здесь моделью и уровнем размышлений.'
+            : 'Задача всегда уходит выбранному агенту с этой моделью и уровнем размышлений.'}{' '}
+          «Как в чате» — берётся то, что выбрано в шапке чата.
         </div>
       </div>
       {row('claude', claude, setClaude)}
@@ -1818,10 +1908,11 @@ function App() {
     }
   };
 
-  const removeRoom = async () => {
-    if (!room || !confirm(`Удалить чат «${room.title}»? Сессии Claude и Codex останутся в их истории.`)) return;
-    await duo.removeRoom(room.id);
-    open(null);
+  const removeRoom = async (id = room && room.id) => {
+    const r = rooms.find((x) => x.id === id);
+    if (!r || !confirm(`Удалить чат «${r.title}»? Сессии Claude и Codex останутся в их истории.`)) return;
+    await duo.removeRoom(id);
+    if (id === currentId) open(null);
   };
 
   useEffect(() => {
@@ -1856,6 +1947,7 @@ function App() {
           setFocusTick((t) => t + 1);
         }}
         onEditProject={(project) => setEditing({ project })}
+        onDeleteRoom={removeRoom}
         onSettings={() => {
           loadSettings();
           setShowSettings(true);

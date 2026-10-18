@@ -107,6 +107,7 @@ class Telegram extends EventEmitter {
             { command: 'to', description: 'Кому писать: Claude, Codex, оба, авто' },
             { command: 'plan', description: 'Задача в режиме «сначала план»' },
             { command: 'stop', description: 'Остановить агентов' },
+            { command: 'rename', description: 'Переименовать чат' },
             { command: 'limits', description: 'Лимиты' },
             { command: 'app', description: 'Мини-приложение' },
             { command: 'help', description: 'Как пользоваться' },

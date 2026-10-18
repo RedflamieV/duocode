@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
 import { Icon, Avatar } from '../src/icons.jsx';
 import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf } from '../src/messages.jsx';
 import { PrefsContext, DEFAULT_PREFS } from '../src/prefs.js';
+import { TitleInput } from '../src/titleinput.jsx';
 
 const duo = window.duo;
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -256,6 +257,9 @@ function Composer({ room, onLocal }) {
 }
 
 function Room({ room, onLocal }) {
+  const [renaming, setRenaming] = useState(false);
+  const [title, setTitle] = useState(null); // новое название, пока сервер не подтвердил
+  useEffect(() => setTitle(null), [room.title]);
   const byId = useMemo(() => new Map(room.messages.map((m) => [m.id, m])), [room.messages]);
   const top = room.messages.filter((m) => !m.parentId);
   const scroll = useRef();
@@ -277,7 +281,21 @@ function Room({ room, onLocal }) {
     <div class="m-room-view">
       <div class="m-room-head">
         <div class="m-room-title">
-          <b>{room.title}</b>
+          {renaming ? (
+            <TitleInput
+              class="m-title-input"
+              value={title || room.title}
+              onSave={(t) => {
+                setTitle(t);
+                duo.renameRoom(room.id, t);
+              }}
+              onDone={() => setRenaming(false)}
+            />
+          ) : (
+            <b onClick={() => setRenaming(true)}>
+              {title || room.title} <Icon name="edit" size={12} />
+            </b>
+          )}
           <small>
             <Icon name="folder" size={12} /> {baseName(room.cwd)}
           </small>
