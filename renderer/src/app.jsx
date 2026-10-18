@@ -1396,19 +1396,17 @@ function AgentsTab({ settings, env, onSaved }) {
     </div>
   );
   const nc = settings.newChat || {};
-  const auto = settings.auto || {};
-  const setAuto = (patch) => duo.setSettings({ auto: patch }).then(onSaved);
   const [codexModels, setCodexModels] = useState([]);
   useEffect(() => {
     duo.codexModels().then((m) => setCodexModels(m || [])).catch(() => {});
   }, []);
-  const SAME = { id: '', name: 'Как в чате' };
   const effortName = (id) => (EFFORT_NAME[id] ? EFFORT_NAME[id][0].toUpperCase() + EFFORT_NAME[id].slice(1) : id);
-  const autoRow = (agent) => {
+  // модель и уровень размышлений, с которыми открывается новый чат
+  const modelRow = (agent) => {
     const models = agent === 'claude' ? CLAUDE_MODELS.slice(1) : codexModels.map((m) => ({ id: m.id, name: m.name }));
-    const efforts = agent === 'claude' ? CLAUDE_EFFORTS : codexEfforts(codexModels, auto.codexModel);
-    const model = auto[`${agent}Model`] || '';
-    const effort = auto[`${agent}Effort`] || '';
+    const efforts = agent === 'claude' ? CLAUDE_EFFORTS : codexEfforts(codexModels, nc.codexModel);
+    const model = nc[`${agent}Model`] || '';
+    const effort = nc[`${agent}Effort`] || '';
     return (
       <div class="auto-row">
         <span class="auto-agent">
@@ -1416,14 +1414,14 @@ function AgentsTab({ settings, env, onSaved }) {
         </span>
         <Select
           value={model}
-          options={[SAME, ...models]}
+          options={[{ id: '', name: `По умолчанию (из настроек ${NAME[agent]})` }, ...models]}
           title="Модель"
           onChange={(v) => {
             const ok = agent === 'claude' || !effort || codexEfforts(codexModels, v).some((e) => e.id === effort);
-            setAuto({ [`${agent}Model`]: v, ...(ok ? {} : { [`${agent}Effort`]: '' }) });
+            setNew({ [`${agent}Model`]: v, ...(ok ? {} : { [`${agent}Effort`]: '' }) });
           }}
         />
-        <Select value={effort} options={[{ id: '', name: model ? 'По умолчанию модели' : 'Как в чате' }, ...efforts.map((e) => ({ id: e.id, name: effortName(e.id) }))]} title="Уровень размышлений" onChange={(v) => setAuto({ [`${agent}Effort`]: v })} />
+        <Select value={effort} options={[{ id: '', name: 'Размышления по умолчанию' }, ...efforts.map((e) => ({ id: e.id, name: effortName(e.id) }))]} title="Уровень размышлений" onChange={(v) => setNew({ [`${agent}Effort`]: v })} />
       </div>
     );
   };
@@ -1432,7 +1430,8 @@ function AgentsTab({ settings, env, onSaved }) {
   const setNew = (patch) => duo.setSettings({ newChat: patch }).then(onSaved);
   const [applied, setApplied] = useState(false);
   const applyAll = async () => {
-    for (const r of await duo.listRooms()) await duo.setRoomSettings(r.id, { mode, delegation });
+    const models = { claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' };
+    for (const r of await duo.listRooms()) await duo.setRoomSettings(r.id, { mode, delegation, ...models });
     setApplied(true);
     setTimeout(() => setApplied(false), 2000);
   };
@@ -1447,30 +1446,18 @@ function AgentsTab({ settings, env, onSaved }) {
         <label>Вызов напарника в новых чатах</label>
         <Segmented value={delegation} onChange={(v) => setNew({ delegation: v })} options={DELEGATION} />
         <div class="field-hint">
-          {DELEGATION.find((d) => d.id === delegation).hint}. В открытом чате оба параметра меняются в его шапке.{' '}
-          <button class="link" onClick={applyAll}>
-            {applied ? 'Применено ко всем чатам' : 'Применить ко всем чатам'}
-          </button>
+          {DELEGATION.find((d) => d.id === delegation).hint}.
         </div>
       </div>
       <div class="field">
-        <label>Кнопка «Авто» в поле ввода</label>
-        <Segmented
-          value={auto.agent || 'limits'}
-          onChange={(v) => setAuto({ agent: v })}
-          options={[
-            { id: 'limits', name: 'У кого больше лимита' },
-            { id: 'claude', name: 'Всегда Claude' },
-            { id: 'codex', name: 'Всегда Codex' },
-          ]}
-        />
-        {(auto.agent || 'limits') !== 'codex' && autoRow('claude')}
-        {(auto.agent || 'limits') !== 'claude' && autoRow('codex')}
+        <label>Модели в новых чатах</label>
+        {modelRow('claude')}
+        {modelRow('codex')}
         <div class="field-hint">
-          {(auto.agent || 'limits') === 'limits'
-            ? 'Задача уходит тому, у кого сейчас меньше занято лимита (5-часовое и недельное окно), с выбранной здесь моделью и уровнем размышлений.'
-            : 'Задача всегда уходит выбранному агенту с этой моделью и уровнем размышлений.'}{' '}
-          «Как в чате» — берётся то, что выбрано в шапке чата.
+          С этими моделью и уровнем размышлений открывается каждый новый чат. Всё, что выше, в открытом чате меняется в его шапке.{' '}
+          <button class="link" onClick={applyAll}>
+            {applied ? 'Применено ко всем чатам' : 'Применить эти настройки ко всем чатам'}
+          </button>
         </div>
       </div>
       {row('claude', claude, setClaude)}

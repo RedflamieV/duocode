@@ -109,7 +109,15 @@ class Rooms extends EventEmitter {
       projectId,
       createdAt: now,
       updatedAt: now,
-      settings: { mode: defaults.mode || 'ask', delegation: defaults.delegation || 'auto', claudeModel: '', claudeEffort: '', codexModel: '', codexEffort: '' },
+      settings: {
+        mode: defaults.mode || 'ask',
+        delegation: defaults.delegation || 'auto',
+        // модели и размышления для новых чатов — из Настроек → Агенты
+        claudeModel: defaults.claudeModel || '',
+        claudeEffort: defaults.claudeEffort || '',
+        codexModel: defaults.codexModel || '',
+        codexEffort: defaults.codexEffort || '',
+      },
       sessions: { claude: null, codex: null },
       seen: { claude: now, codex: now },
       messages: [],
@@ -202,8 +210,6 @@ class Rooms extends EventEmitter {
     for (const agent of fresh) {
       const key = `${room.id}:${agent}`;
       const job = { prompt: text, attachments, plan, userMsgId: userMsg.id };
-      // «Авто» может задавать свою модель и уровень размышлений (Настройки → Агенты)
-      if (routed && routed.agent === agent) Object.assign(job, { model: routed.model || null, effort: routed.effort || null });
       if (this.main.has(key)) {
         if (!this.queues.has(key)) this.queues.set(key, []);
         this.queues.get(key).push(job);
@@ -538,11 +544,9 @@ class Rooms extends EventEmitter {
 
   runAgent(room, agent, opts) {
     const { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null, cwd = null, isolated = false, duelId = null, pipeline = null } = opts;
-    // модель и размышления: заданные для хода (кнопка «Авто») или из настроек чата.
-    // Если для хода задана только модель, уровень берём её собственный — чатовый может ей не подходить.
     const s = room.settings;
-    const runModel = opts.model || (agent === 'claude' ? s.claudeModel : s.codexModel) || '';
-    const runEffort = opts.effort || (opts.model ? '' : (agent === 'claude' ? s.claudeEffort : s.codexEffort) || '');
+    const runModel = (agent === 'claude' ? s.claudeModel : s.codexModel) || '';
+    const runEffort = (agent === 'claude' ? s.claudeEffort : s.codexEffort) || '';
     const key = `${room.id}:${agent}`;
     const fork = isolated || this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
     const workDir = cwd || room.cwd;

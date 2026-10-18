@@ -245,30 +245,14 @@ function sendLimits() {
 }
 
 // «Авто»: задачу берёт агент, у которого больше свободного лимита.
-// Кнопка «Авто»: агент, модель и уровень размышлений — из Настроек → Агенты.
-// По умолчанию выбирает того, у кого больше осталось лимита.
-const EFFORT_RU = { none: 'без размышлений', minimal: 'минимальные', low: 'низкие', medium: 'средние', high: 'высокие', xhigh: 'очень высокие', max: 'максимальные' };
-
 function pickAgent() {
-  const a = settings.auto || {};
-  let agent;
-  let why = '';
-  if (a.agent === 'claude' || a.agent === 'codex') {
-    agent = a.agent;
-  } else {
-    const load = (data) => (data && data.ok && data.windows.length ? Math.max(...data.windows.slice(0, 2).map((w) => w.percent)) : 50);
-    const installed = (cmd) => !!resolveCommand(cmd);
-    const c = installed(settings.claudeCommand) ? load(limits.claude) : 999;
-    const x = installed(settings.codexCommand) ? load(limits.codex) : 999;
-    agent = x < c ? 'codex' : 'claude';
-    const fmt = (v) => (v >= 999 ? 'не установлен' : `занято ${Math.round(v)}%`);
-    why = `: у Claude ${fmt(c)}, у Codex ${fmt(x)}`;
-  }
-  const model = a[`${agent}Model`] || '';
-  const effort = a[`${agent}Effort`] || '';
-  const name = agent === 'claude' ? 'Claude' : 'Codex';
-  const extra = [model && (agent === 'claude' ? model[0].toUpperCase() + model.slice(1) : model), effort && `размышления ${EFFORT_RU[effort] || effort}`].filter(Boolean);
-  return { agent, model, effort, reason: `Авто → ${name}${extra.length ? ` (${extra.join(', ')})` : ''}${why}` };
+  const load = (data) => (data && data.ok && data.windows.length ? Math.max(...data.windows.slice(0, 2).map((w) => w.percent)) : 50);
+  const installed = (cmd) => !!resolveCommand(cmd);
+  const c = installed(settings.claudeCommand) ? load(limits.claude) : 999;
+  const x = installed(settings.codexCommand) ? load(limits.codex) : 999;
+  const agent = x < c ? 'codex' : 'claude';
+  const fmt = (v) => (v >= 999 ? 'не установлен' : `занято ${Math.round(v)}%`);
+  return { agent, reason: `Авто → ${agent === 'claude' ? 'Claude' : 'Codex'}: у Claude ${fmt(c)}, у Codex ${fmt(x)}` };
 }
 
 async function refreshClaudeLimits(force = false) {
@@ -535,7 +519,7 @@ function setupTelegram() {
 
 // ---------- Управление прямо в чате с ботом (работает без туннеля) ----------
 
-const TARGET_NAME = { claude: 'Claude', codex: 'Codex', both: 'Claude и Codex', auto: 'Авто' };
+const TARGET_NAME = { claude: 'Claude', codex: 'Codex', both: 'Claude и Codex', auto: 'Авто (у кого больше лимита)' };
 const followed = new Map(); // roomId -> время, до которого показываем ход работы в Telegram
 const progress = new Map(); // id сообщения агента -> { tgId, text, at, timer }
 
@@ -1110,7 +1094,6 @@ function bindIpc() {
       ...settings,
       ...patch,
       newChat: { ...settings.newChat, ...(patch.newChat || {}) },
-      auto: { ...settings.auto, ...(patch.auto || {}) },
       appearance: { ...settings.appearance, ...(patch.appearance || {}) },
       telegram: { ...settings.telegram, ...(patch.telegram || {}) },
       general: { ...settings.general, ...(patch.general || {}) },
