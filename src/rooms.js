@@ -4,6 +4,7 @@
 // - агенты вызывают друг друга через MCP-инструменты ask_codex / ask_claude (см. bridge/mcp.js);
 // - подтверждения действий обоих агентов показываются прямо в чате.
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { runClaude, toolPart } = require('./agents/claude');
@@ -231,6 +232,7 @@ class Rooms extends EventEmitter {
         }
         room.sessions[agent] = null;
         room.seen[agent] = Date.now();
+        if (room.memorySeen) room.memorySeen[agent] = room.memorySeen[`${agent}Dirs`] = null;
         if (room.context) room.context[agent] = null;
         note(`${NAME[agent]} начинает с чистого листа: прошлая переписка этого чата ему больше не видна.`);
         continue;
@@ -613,6 +615,21 @@ class Rooms extends EventEmitter {
         DUO_ROOM: room.id,
       };
       const memoryBlock = memory.block(room.cwd);
+      // Память и состав папок идут в сообщении, только когда изменились с прошлого раза.
+      // Системная подсказка остаётся неизменной, иначе каждое изменение памяти сбрасывало бы кэш
+      // всей переписки и агент заново платил бы за неё полную цену.
+      if (!room.memorySeen) room.memorySeen = {};
+      const seen = room.memorySeen;
+      const digest = (s) => (s ? crypto.createHash('sha1').update(s).digest('hex') : '');
+      let prefix = '';
+      if (!raw) {
+        const memHash = digest(memoryBlock);
+        if (memoryBlock && (isolated || seen[agent] !== memHash)) prefix += `${memoryBlock}\n\n`;
+        if (!isolated) seen[agent] = memHash;
+        const dirsHash = digest(projectNote);
+        if (projectNote && !isolated && seen[`${agent}Dirs`] !== dirsHash) prefix += `[${projectNote}]\n\n`;
+        if (!isolated) seen[`${agent}Dirs`] = dirsHash;
+      }
       let handle;
       if (agent === 'claude') {
         const mcpFile = path.join(this.runDir, `${msg.id}.mcp.json`);
@@ -626,13 +643,10 @@ class Rooms extends EventEmitter {
             },
           }),
         );
-        fs.writeFileSync(
-          promptFile,
-          INSTRUCTIONS.claude + (projectNote && !isolated ? `\n\n${projectNote}` : '') + (memoryBlock ? `\n\nShared project memory (both agents see it):\n${memoryBlock}` : ''),
-        );
+        fs.writeFileSync(promptFile, INSTRUCTIONS.claude);
         handle = runClaude({
           command: settings.claudeCommand,
-          prompt: fullPrompt,
+          prompt: prefix + fullPrompt,
           attachments,
           plan,
           cwd: workDir,
@@ -646,19 +660,7 @@ class Rooms extends EventEmitter {
           addDirs: isolated ? [] : folders.extra,
         });
       } else {
-        // память Codex получает в сообщении, когда она изменилась с прошлого раза
-        let text = fullPrompt;
-        const hash = memoryBlock ? String(memoryBlock.length) + memoryBlock.slice(-64) : '';
-        if (!room.memorySeen) room.memorySeen = {};
-        if (memoryBlock && !raw && (isolated || room.memorySeen.codex !== hash)) {
-          text = `${memoryBlock}\n\n${text}`;
-          if (!isolated) room.memorySeen.codex = hash;
-        }
-        // состав папок Codex узнаёт в сообщении, когда он изменился
-        if (projectNote && !raw && !isolated && room.memorySeen.codexDirs !== projectNote) {
-          text = `[${projectNote}]\n\n${text}`;
-          room.memorySeen.codexDirs = projectNote;
-        }
+        const text = prefix + fullPrompt;
         handle = runCodex(this.codex, {
           prompt: text,
           action,
