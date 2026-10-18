@@ -513,7 +513,26 @@ class Rooms extends EventEmitter {
   }
 
   // isolated: ход в отдельной копии проекта (дуэль) — без общей сессии агента и без отката.
-  runAgent(room, agent, { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null, cwd = null, isolated = false, duelId = null, pipeline = null }) {
+  // Пересказ чата для новой сессии агента, когда прежняя пропала.
+  history(room, agent, skip) {
+    const lines = [];
+    let size = 0;
+    for (const m of [...room.messages].reverse()) {
+      if (skip.includes(m.id)) continue;
+      let line = null;
+      if (m.role === 'user') line = `Пользователь${m.targets && m.targets.length === 1 ? ` (→ ${NAME[m.targets[0]]})` : ''}: ${clip(m.text, 2000)}`;
+      else if (m.role === 'agent' && m.finalText) line = `${m.agent === agent ? 'Ты' : NAME[m.agent]}${m.requestedBy ? ` (по запросу ${NAME[m.requestedBy]})` : ''}: ${clip(m.finalText, 2500)}`;
+      if (!line) continue;
+      if (size + line.length > 16000) break;
+      lines.unshift(line);
+      size += line.length;
+    }
+    if (!lines.length) return '';
+    return `<duocode_history>\nТвоя прежняя сессия в этом чате недоступна, поэтому это новая сессия. Вот последняя часть переписки из DuoCode — продолжай с учётом её:\n${lines.join('\n\n')}\n</duocode_history>\n\n`;
+  }
+
+  runAgent(room, agent, opts) {
+    const { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null, cwd = null, isolated = false, duelId = null, pipeline = null } = opts;
     const key = `${room.id}:${agent}`;
     const fork = isolated || this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
     const workDir = cwd || room.cwd;
@@ -564,6 +583,26 @@ class Rooms extends EventEmitter {
     let before = null;
 
     const finish = async (r) => {
+      // прежней сессии агента больше нет — начинаем новую, передаём ей историю чата и повторяем сообщение
+      if (r.lost && !opts.recovered && !isolated && !fork && !action) {
+        for (const f of tmpFiles) fs.rm(f, () => {});
+        room.sessions[agent] = null;
+        if (room.memorySeen) room.memorySeen[agent] = room.memorySeen[`${agent}Dirs`] = null;
+        this.runs.delete(msg.id);
+        if (this.main.get(key) === msg.id) this.main.delete(key);
+        // сорвавшийся ход превращаем в заметку (тот же id — окно заменит его, а не оставит висеть)
+        const recap = raw ? '' : this.history(room, agent, [msg.id, opts.userMsgId]);
+        for (const k of Object.keys(msg)) if (k !== 'id') delete msg[k];
+        Object.assign(msg, {
+          role: 'system',
+          ts: Date.now(),
+          text: `Прежняя сессия ${NAME[agent]} не найдена (Claude Code и Codex со временем удаляют старые сессии). Начинаю новую и передаю ей историю этого чата.`,
+        });
+        this.markDirty(room, msg);
+        const next = this.runAgent(room, agent, { ...opts, prompt: recap + prompt, recovered: true });
+        next.done.then(resolveDone);
+        return;
+      }
       msg.status = r.stopped ? 'stopped' : r.error ? 'error' : 'done';
       msg.error = r.error || null;
       msg.finalText = r.text || '';

@@ -383,7 +383,12 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
     } else if (threadId && server.loaded.has(threadId)) {
       tid = threadId;
     } else if (threadId) {
-      r = await server.request('thread/resume', { threadId, ...tp, excludeTurns: true });
+      try {
+        r = await server.request('thread/resume', { threadId, ...tp, excludeTurns: true });
+      } catch (err) {
+        // тред не найден (файл сессии удалён или перенесён) — DuoCode начнёт новый с историей чата
+        return finish({ text: '', error: err.message, lost: true });
+      }
     } else {
       r = await server.request('thread/start', tp);
     }

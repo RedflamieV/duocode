@@ -265,8 +265,12 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   proc.on('close', (code) => {
     clearTimeout(closeTimer);
     if (ev.stopped) finish({ text: lastText, error: null, stopped: true, cost });
-    else if (result) finish(result);
-    else finish({ text: lastText, error: code ? stderr.trim() || `Claude завершился с кодом ${code}` : null });
+    else {
+      const r = result || { text: lastText, error: code ? stderr.trim() || `Claude завершился с кодом ${code}` : null };
+      // сессии нет на диске: Claude Code сам удаляет старые (cleanupPeriodDays, по умолчанию 30 дней)
+      if (r.error && sessionId && /No conversation found/i.test(stderr + r.error)) r.lost = true;
+      finish(r);
+    }
   });
   proc.stdin.on('error', () => {});
 
