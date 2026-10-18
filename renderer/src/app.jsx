@@ -1335,6 +1335,11 @@ function AppearanceTab({ prefs }) {
         <Segmented value={prefs.chatWidth} onChange={(v) => set({ chatWidth: v })} options={[{ id: 'narrow', name: 'Узкая' }, { id: 'normal', name: 'Обычная' }, { id: 'wide', name: 'Широкая' }, { id: 'full', name: 'Во всё окно' }]} />
       </div>
       <div class="field">
+        <label>Анимации</label>
+        <Segmented value={prefs.motion || 'full'} onChange={(v) => set({ motion: v })} options={[{ id: 'full', name: 'Яркие' }, { id: 'subtle', name: 'Спокойные' }, { id: 'off', name: 'Выключены' }]} />
+        <div class="field-hint">Появление сообщений, «дыхание» работающего агента, всплывающие меню и окна, плавная смена темы.</div>
+      </div>
+      <div class="field">
         <label>Плотность</label>
         <Segmented value={prefs.density} onChange={(v) => set({ density: v })} options={[{ id: 'comfortable', name: 'Просторно' }, { id: 'compact', name: 'Компактно' }]} />
       </div>

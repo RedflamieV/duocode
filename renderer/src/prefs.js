@@ -11,6 +11,7 @@ export const DEFAULT_PREFS = {
   expandThinking: false,
   sendKey: 'enter',
   showCost: true,
+  motion: 'full', // анимации: full — яркие, subtle — спокойные, off — выключены
 };
 
 export const PrefsContext = createContext(DEFAULT_PREFS);
@@ -26,7 +27,16 @@ const CODE_FONTS = {
 
 export function applyPrefs(p) {
   const root = document.documentElement;
+  // при смене темы цвета плавно перетекают
+  if (root.dataset.theme && root.dataset.theme !== p.theme && p.motion !== 'off') {
+    root.classList.add('theme-switching');
+    clearTimeout(applyPrefs.themeTimer);
+    applyPrefs.themeTimer = setTimeout(() => root.classList.remove('theme-switching'), 450);
+  }
   root.dataset.theme = p.theme;
+  // «яркие» анимации смягчаются, если в системе включено «уменьшить движение»
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  root.dataset.motion = p.motion === 'full' && reduce ? 'subtle' : p.motion || 'full';
   root.dataset.density = p.density;
   root.style.setProperty('--font-size', `${p.fontSize}px`);
   root.style.setProperty('--chat-width', WIDTHS[p.chatWidth] || WIDTHS.normal);
