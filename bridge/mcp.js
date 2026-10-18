@@ -106,3 +106,26 @@ rl.on('line', async (line) => {
   }
 });
 rl.on('close', () => process.exit(0));
+
+// Сторож: если DuoCode закрылся аварийно (снят из диспетчера задач, выключили питание), Windows не завершает
+// запущенных им агентов. Мост живёт внутри агента, поэтому, не достучавшись до DuoCode дважды подряд,
+// останавливает своего агента — чтобы тот не продолжал менять файлы без присмотра.
+let misses = 0;
+const watchdog = setInterval(() => {
+  const req = http.request({ host: '127.0.0.1', port: PORT, method: 'GET', path: '/alive', timeout: 3000 }, (res) => {
+    res.resume();
+    misses = 0;
+  });
+  req.on('timeout', () => req.destroy());
+  req.on('error', (err) => {
+    if (err.code !== 'ECONNREFUSED' && err.code !== 'ECONNRESET') return;
+    if (++misses < 2) return;
+    clearInterval(watchdog);
+    try {
+      process.kill(process.ppid);
+    } catch {}
+    process.exit(0);
+  });
+  req.end();
+}, 5000);
+watchdog.unref();

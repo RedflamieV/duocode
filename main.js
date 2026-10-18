@@ -134,6 +134,11 @@ function foldersOf(cwd) {
 function startBridge(rooms) {
   const token = crypto.randomBytes(24).toString('hex');
   const server = http.createServer((req, res) => {
+    // мост в каждом агенте проверяет, жив ли DuoCode (см. bridge/mcp.js)
+    if (req.method === 'GET' && req.url === '/alive') {
+      res.writeHead(200).end('ok');
+      return;
+    }
     if (req.method !== 'POST' || req.url !== '/call') {
       res.writeHead(404).end();
       return;
@@ -847,6 +852,7 @@ function setupRemote() {
       createRoom: ({ projectId }) => (projects.get(settings, projectId) ? createRoom({ projectId }) : Promise.reject(new Error('Неизвестный проект'))),
       setRoomSettings: (id, patch) => rooms.updateSettings(id, patch),
       renameRoom: (id, title) => rooms.rename(id, title),
+      resend: (id, msgId) => rooms.resend(id, msgId),
       send: (id, payload) => rooms.send(id, payload),
       stop: (id) => rooms.stop(id),
       approve: (id, approvalId, decision, extra) => rooms.respondApproval(id, approvalId, decision, extra),
@@ -978,6 +984,7 @@ function bindIpc() {
     return rooms.importSession({ ...s, projectId: project && project.id });
   });
   ipcMain.handle('rooms:rename', (_e, id, title) => rooms.rename(id, title));
+  ipcMain.handle('rooms:resend', (_e, id, msgId) => rooms.resend(id, msgId));
   ipcMain.handle('rooms:settings', (_e, id, patch) => rooms.updateSettings(id, patch));
   ipcMain.handle('rooms:remove', (_e, id) => rooms.remove(id));
   ipcMain.handle('rooms:send', (_e, id, payload) => rooms.send(id, payload));

@@ -980,7 +980,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
           {top.map((m) =>
             m.role === 'user' ? (
               <div data-msg={m.id} key={m.id}>
-                <UserMessage msg={m} />
+                <UserMessage msg={m} roomId={room.id} />
               </div>
             ) : m.role === 'system' ? (
               <SystemMessage msg={m} key={m.id} />

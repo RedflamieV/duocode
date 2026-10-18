@@ -92,18 +92,64 @@ class Rooms extends EventEmitter {
       room.title = String(room.title || '').replace(/\n?… \(ещё \d+ симв\.\)$/, '…');
       for (const m of room.messages) {
         if (m.role === 'agent' && m.status === 'running') {
+          // DuoCode закрылся посреди хода: показываем «Продолжить», а откат досчитаем ниже
           m.status = 'stopped';
+          m.interrupted = true;
           m.draft = '';
+          m.finishedAt = m.finishedAt || Date.now();
         }
         for (const p of m.parts || []) {
           if (p.kind === 'approval' && p.status === 'pending') p.status = 'expired';
           if (p.kind === 'delegate' && p.status === 'running') p.status = 'stopped';
           if (p.kind === 'tool' && p.status === 'running') p.status = 'stopped';
         }
-        if (m.role === 'user') m.queued = [];
+        // сообщения, которые ждали в очереди, агенту не ушли — отметим и предложим отправить
+        if (m.role === 'user') {
+          if (m.queued && m.queued.length) m.unsent = [...new Set([...(m.unsent || []), ...m.queued])];
+          m.queued = [];
+        }
       }
       this.rooms.set(room.id, room);
     }
+    this.recoverCheckpoints();
+  }
+
+  // Ход, прерванный закрытием DuoCode: снимок «до» сохранён в начале хода — сравниваем с тем, что
+  // на диске сейчас, и даём откатить полусделанные правки.
+  async recoverCheckpoints() {
+    for (const room of this.rooms.values()) {
+      for (const m of room.messages) {
+        if (!m.pendingCheckpoint) continue;
+        const before = m.pendingCheckpoint;
+        delete m.pendingCheckpoint;
+        const cp = await this.buildCheckpoint(before).catch(() => null);
+        if (cp) m.checkpoint = cp;
+        this.markDirty(room, m);
+      }
+    }
+  }
+
+  async buildCheckpoint(before) {
+    const parts = [];
+    for (const b of before) {
+      const after = await this.checkpoints.snapshot(b.dir).catch(() => null);
+      const files = after ? await this.checkpoints.changes(b.dir, b.tree, after).catch(() => []) : [];
+      if (files.length) parts.push({ dir: b.dir, before: b.tree, after, files });
+    }
+    const many = before.length > 1;
+    const files = parts.flatMap((p) => p.files.map((f) => ({ ...f, dir: p.dir, label: many ? `${path.basename(p.dir)}/${f.path}` : f.path })));
+    return files.length ? { parts, files: files.map((f) => ({ status: f.status, path: f.label })), reverted: false } : null;
+  }
+
+  // «Отправить» у сообщения, которое не ушло из-за закрытия DuoCode
+  resend(roomId, msgId) {
+    const room = this.rooms.get(roomId);
+    const m = room && room.messages.find((x) => x.id === msgId);
+    if (!m || !m.unsent || !m.unsent.length) return;
+    const targets = m.unsent;
+    m.unsent = [];
+    this.markDirty(room, m);
+    this.send(roomId, { text: m.text, targets, attachments: m.attachments || [], plan: !!m.plan });
   }
 
   // ---------- Чтение ----------
@@ -656,16 +702,10 @@ class Rooms extends EventEmitter {
       }
       for (const f of tmpFiles) fs.rm(f, () => {});
       // снимок после хода: что агент поменял в файлах всех папок проекта — для кнопки «Откатить»
+      delete msg.pendingCheckpoint;
       if (before && !isolated) {
-        const parts = [];
-        for (const b of before) {
-          const after = await this.checkpoints.snapshot(b.dir).catch(() => null);
-          const files = after ? await this.checkpoints.changes(b.dir, b.tree, after).catch(() => []) : [];
-          if (files.length) parts.push({ dir: b.dir, before: b.tree, after, files });
-        }
-        const many = before.length > 1;
-        const files = parts.flatMap((p) => p.files.map((f) => ({ ...f, dir: p.dir, label: many ? `${path.basename(p.dir)}/${f.path}` : f.path })));
-        if (files.length) msg.checkpoint = { parts, files: files.map((f) => ({ status: f.status, path: f.label })), reverted: false };
+        const cp = await this.buildCheckpoint(before);
+        if (cp) msg.checkpoint = cp;
       }
       msg.finishedAt = Date.now();
       this.runs.delete(msg.id);
@@ -686,6 +726,11 @@ class Rooms extends EventEmitter {
         for (const dir of dirs) {
           const tree = await this.checkpoints.snapshot(dir).catch(() => null);
           if (tree) before.push({ dir, tree });
+        }
+        // если DuoCode закроют посреди хода, по этому снимку после запуска можно будет откатить правки
+        if (before.length) {
+          msg.pendingCheckpoint = before;
+          this.markDirty(room, msg);
         }
       }
       const settings = this.getSettings();

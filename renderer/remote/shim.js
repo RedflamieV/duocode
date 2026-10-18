@@ -22,7 +22,7 @@ let source = null;
 let lastEvent = 0;
 
 // Действия, после которых интерфейсу стоит сразу забрать свежее состояние, не дожидаясь потока.
-const MUTATING = new Set(['send', 'stop', 'approve', 'planAction', 'revert', 'duelApply', 'setRoomSettings', 'createRoom', 'renameRoom']);
+const MUTATING = new Set(['send', 'stop', 'approve', 'planAction', 'revert', 'duelApply', 'setRoomSettings', 'createRoom', 'renameRoom', 'resend']);
 async function act(method, ...args) {
   const result = await rpc(method, ...args);
   if (MUTATING.has(method)) listeners.changed.forEach((cb) => cb(method));
@@ -55,6 +55,7 @@ window.duo = {
   createRoom: (opts) => act('createRoom', opts),
   setRoomSettings: (id, patch) => act('setRoomSettings', id, patch),
   renameRoom: (id, title) => act('renameRoom', id, title),
+  resend: (id, msgId) => act('resend', id, msgId),
   send: (id, payload) => act('send', id, payload),
   stop: (id) => act('stop', id),
   approve: (id, approvalId, decision, extra) => act('approve', id, approvalId, decision, extra),

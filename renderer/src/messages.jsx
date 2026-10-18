@@ -616,6 +616,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
         )}
         {msg.warning && !msg.error && running && <div class="warn-line">{msg.warning}</div>}
       </div>
+      {msg.interrupted && !nested && <Interrupted msg={msg} room={room} />}
       {msg.checkpoint && !running && !nested && <CheckpointBar msg={msg} room={room} />}
       {!running && !nested && (
         <div class="msg-actions">
@@ -639,7 +640,31 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
   );
 }
 
-export function UserMessage({ msg }) {
+// Ход прервался, потому что DuoCode закрыли. «Продолжить» — только у последнего ответа этого агента.
+function Interrupted({ msg, room }) {
+  const later = room.messages.some((m) => m.role === 'agent' && m.agent === msg.agent && !m.parentId && m.ts > msg.ts);
+  return (
+    <div class="interrupted">
+      <Icon name="alert" size={13} />
+      <span>Прервано: DuoCode закрыли, пока {NAME[msg.agent]} работал. Сделанное до этого сохранилось{msg.checkpoint && !msg.checkpoint.reverted ? ', правки можно откатить' : ''}.</span>
+      {!later && (
+        <button
+          class="chip-btn"
+          onClick={() =>
+            window.duo.send(room.id, {
+              text: 'Продолжи с того места, где остановился: DuoCode закрыли посреди твоей работы. Сначала проверь, что уже успел сделать, и доделай задачу.',
+              targets: [msg.agent],
+            })
+          }
+        >
+          <Icon name="play" size={13} /> Продолжить
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function UserMessage({ msg, roomId }) {
   const both = msg.targets.length > 1;
   return (
     <div class={`msg user ${msg.local ? 'local' : ''}`}>
@@ -656,6 +681,15 @@ export function UserMessage({ msg }) {
       {msg.routed && <div class="routed">{msg.routed}</div>}
       <div class="bubble">{msg.text}</div>
       {msg.attachments && msg.attachments.length > 0 && <Attachments items={msg.attachments} />}
+      {msg.unsent && msg.unsent.length > 0 && roomId && (
+        <div class="interrupted user-side">
+          <Icon name="alert" size={13} />
+          <span>Не отправлено {msg.unsent.map((a) => NAME[a]).join(' и ')}: DuoCode закрылся, пока сообщение ждало очереди.</span>
+          <button class="chip-btn" onClick={() => window.duo.resend(roomId, msg.id)}>
+            Отправить
+          </button>
+        </div>
+      )}
     </div>
   );
 }
