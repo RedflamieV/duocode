@@ -133,6 +133,8 @@ class CodexServer extends EventEmitter {
 const SANDBOX = {
   ask: { approvalPolicy: 'untrusted', sandbox: 'workspace-write' },
   edits: { approvalPolicy: 'on-request', sandbox: 'workspace-write' },
+  // как пресет Auto в Codex: работает в песочнице и сам просит разрешение, когда нужно выйти за неё
+  auto: { approvalPolicy: 'on-request', sandbox: 'workspace-write' },
   full: { approvalPolicy: 'never', sandbox: 'danger-full-access' },
   plan: { approvalPolicy: 'never', sandbox: 'read-only' },
 };

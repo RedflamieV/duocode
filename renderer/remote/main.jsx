@@ -16,6 +16,7 @@ const PREFS = { ...DEFAULT_PREFS, steps: 'grouped', showCost: false };
 const MODES = [
   { id: 'ask', name: 'Спрашивать' },
   { id: 'edits', name: 'Авто-правки' },
+  { id: 'auto', name: 'Авто' },
   { id: 'full', name: 'Полный доступ' },
 ];
 

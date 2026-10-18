@@ -12,6 +12,11 @@ const baseName = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '')
 const MODES = [
   { id: 'ask', name: 'Спрашивать', hint: 'Агенты спрашивают разрешение на команды и правки' },
   { id: 'edits', name: 'Авто-правки', hint: 'Правки файлов без вопросов, команды — с подтверждением' },
+  {
+    id: 'auto',
+    name: 'Авто',
+    hint: 'Как авто-режим в терминале: Claude сам оценивает риск и спрашивает только о рискованном, Codex работает в песочнице и просит разрешение, только когда нужно выйти за неё',
+  },
   { id: 'full', name: 'Полный доступ', hint: 'Всё без вопросов и без песочницы. Только для проектов, которым вы доверяете' },
 ];
 
@@ -1351,8 +1356,33 @@ function AgentsTab({ settings, env, onSaved }) {
       </div>
     </div>
   );
+  const nc = settings.newChat || {};
+  const mode = nc.mode || 'ask';
+  const delegation = nc.delegation || 'auto';
+  const setNew = (patch) => duo.setSettings({ newChat: patch }).then(onSaved);
+  const [applied, setApplied] = useState(false);
+  const applyAll = async () => {
+    for (const r of await duo.listRooms()) await duo.setRoomSettings(r.id, { mode, delegation });
+    setApplied(true);
+    setTimeout(() => setApplied(false), 2000);
+  };
   return (
     <div class="tab-body">
+      <div class="field">
+        <label>Режим разрешений в новых чатах</label>
+        <Segmented value={mode} onChange={(v) => setNew({ mode: v })} options={MODES} />
+        <div class="field-hint">{MODES.find((m) => m.id === mode).hint}</div>
+      </div>
+      <div class="field">
+        <label>Вызов напарника в новых чатах</label>
+        <Segmented value={delegation} onChange={(v) => setNew({ delegation: v })} options={DELEGATION} />
+        <div class="field-hint">
+          {DELEGATION.find((d) => d.id === delegation).hint}. В открытом чате оба параметра меняются в его шапке.{' '}
+          <button class="link" onClick={applyAll}>
+            {applied ? 'Применено ко всем чатам' : 'Применить ко всем чатам'}
+          </button>
+        </div>
+      </div>
       {row('claude', claude, setClaude)}
       {row('codex', codex, setCodex)}
       <p class="field-hint">

@@ -1019,6 +1019,7 @@ function bindIpc() {
     settings = {
       ...settings,
       ...patch,
+      newChat: { ...settings.newChat, ...(patch.newChat || {}) },
       appearance: { ...settings.appearance, ...(patch.appearance || {}) },
       telegram: { ...settings.telegram, ...(patch.telegram || {}) },
       general: { ...settings.general, ...(patch.general || {}) },

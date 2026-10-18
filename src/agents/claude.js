@@ -104,6 +104,8 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   else if (mode === 'full') args.push('--permission-mode', 'bypassPermissions');
   else {
     if (mode === 'edits') args.push('--permission-mode', 'acceptEdits');
+    // auto: Claude Code сам оценивает риск действия и спрашивает только о рискованном
+    if (mode === 'auto') args.push('--permission-mode', 'auto');
     args.push('--permission-prompt-tool', 'mcp__duo__approve');
   }
   if (model) args.push('--model', model);

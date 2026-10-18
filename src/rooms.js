@@ -101,6 +101,7 @@ class Rooms extends EventEmitter {
 
   create({ cwd, title, projectId = null }) {
     const now = Date.now();
+    const defaults = this.getSettings().newChat || {};
     const room = {
       id: uid('room-'),
       title: title || 'Новый чат',
@@ -108,7 +109,7 @@ class Rooms extends EventEmitter {
       projectId,
       createdAt: now,
       updatedAt: now,
-      settings: { mode: 'ask', delegation: 'auto', claudeModel: '', claudeEffort: '', codexModel: '', codexEffort: '' },
+      settings: { mode: defaults.mode || 'ask', delegation: defaults.delegation || 'auto', claudeModel: '', claudeEffort: '', codexModel: '', codexEffort: '' },
       sessions: { claude: null, codex: null },
       seen: { claude: now, codex: now },
       messages: [],
@@ -838,7 +839,7 @@ class Rooms extends EventEmitter {
       // после утверждения плана Claude работает в обычном режиме — применяем режим чата сами
       const mode = room.settings.mode;
       const EDITS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
-      if (mode === 'full' || (mode === 'edits' && EDITS.has(toolName))) return allow;
+      if (mode === 'full' || ((mode === 'edits' || mode === 'auto') && EDITS.has(toolName))) return allow;
 
       const set = this.allowed.get(`${roomId}:claude`);
       if (toolName.startsWith('mcp__duo__') || (set && set.has(toolName))) return allow;
