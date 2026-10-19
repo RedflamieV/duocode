@@ -45,6 +45,11 @@ const LANGUAGE = {
   en: '- Language: the user reads English. Write everything the user sees in English, even when the user, the chat history or the instructions above are in another language: your replies, your thinking, plans and todo items, and the description of every tool call. Keep code, identifiers, commands and file paths as they are.',
 };
 
+const REMINDER = {
+  ru: '(DuoCode: пиши по-русски всё, что видит пользователь, — ответ, пояснения между шагами, план и описания команд.)',
+  en: '(DuoCode: write everything the user sees in English — the reply, notes between steps, the plan and command descriptions.)',
+};
+
 // Что задаёт пользователь: язык ответов и свои инструкции (общие и проекта).
 function standing(settings, project) {
   let text = '';
@@ -652,6 +657,10 @@ class Rooms extends EventEmitter {
       fullPrompt += `[Режим сравнения DuoCode: ${NAME[peer(agent)]} параллельно решает ту же задачу в своей копии проекта. Работай самостоятельно, не вызывай ${NAME[peer(agent)]}. Пользователь сравнит два решения и выберет одно.]\n\n`;
     }
     fullPrompt += prompt;
+    // Короткое напоминание о языке в конце сообщения: в длинной сессии правило из системной подсказки
+    // тонет в переписке, а конец сообщения модель видит лучше всего. В чате оно не показывается.
+    const lang = (this.getSettings().language || 'ru');
+    if (!raw && REMINDER[lang]) fullPrompt += `\n\n${REMINDER[lang]}`;
 
     const run = { room, agent, msg, handle: null, stopRequested: false };
     this.runs.set(msg.id, run);
