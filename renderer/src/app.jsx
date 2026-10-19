@@ -1647,6 +1647,8 @@ function TelegramTab({ settings, onSaved }) {
               <div class="field-hint">
                 {(t.tunnel || 'cloudflare') === 'cloudflare' && 'Бесплатный туннель Cloudflare. В России Cloudflare часто ограничен провайдерами — если приложение не открывается, попробуйте localhost.run или VPN на телефоне.'}
                 {t.tunnel === 'localhostrun' && 'Бесплатный SSH-туннель localhost.run: использует встроенный в Windows ssh, ничего не скачивает. Адрес вида *.lhr.life.'}
+                {' '}Сервис туннеля технически видит то, что идёт через мини-приложение (переписку чатов). Управлять компьютером без вашего Telegram он не может — каждый запрос подписан Telegram.
+                Не пользуетесь мини-приложением — выключите его: бот в чате работает и без туннеля.
                 {t.tunnel === 'custom' && (
                   <>
                     Поднимите свой туннель (ngrok, Tuna, Tailscale Funnel и т. п.) на <code>http://127.0.0.1:{remote.port || 47821}</code> и вставьте его https-адрес:

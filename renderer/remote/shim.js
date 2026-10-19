@@ -3,7 +3,22 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 const initData = (tg && tg.initData) || '';
 
+// пропуск для адресов (поток обновлений, картинки) — вместо подписи Telegram, см. src/remote.js
+let pass = '';
+let passAt = 0;
+async function session() {
+  pass = await rawRpc('session');
+  passAt = Date.now();
+  return pass;
+}
+let ready = session().catch(() => {});
+
 async function rpc(method, ...args) {
+  await ready;
+  return rawRpc(method, ...args);
+}
+
+async function rawRpc(method, ...args) {
   const res = await fetch('api/rpc', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
@@ -14,8 +29,8 @@ async function rpc(method, ...args) {
   return json.result;
 }
 
-// картинки с компьютера (вложения, скриншоты агентов) — через API, с той же подписью Telegram
-window.duoImageUrl = (p) => `api/image?path=${encodeURIComponent(p)}&auth=${encodeURIComponent(initData)}`;
+// картинки с компьютера (вложения, скриншоты агентов) — через API, по пропуску
+window.duoImageUrl = (p) => `api/image?path=${encodeURIComponent(p)}&pass=${encodeURIComponent(pass)}`;
 
 const listeners = { rooms: new Set(), messages: new Set(), limits: new Set(), status: new Set(), changed: new Set() };
 let source = null;
@@ -29,9 +44,15 @@ async function act(method, ...args) {
   return result;
 }
 
-function connect() {
+async function connect() {
   if (source) source.close();
-  source = new EventSource(`api/events?auth=${encodeURIComponent(initData)}`);
+  // пропуск мог истечь или DuoCode перезапустили (тогда старые пропуски недействительны) — берём свежий
+  if (!pass || Date.now() - passAt > 6 * 3600 * 1000 || connect.failed) {
+    ready = session().catch(() => {});
+    await ready;
+    connect.failed = false;
+  }
+  source = new EventSource(`api/events?pass=${encodeURIComponent(pass)}`);
   for (const ev of ['hello', 'ping']) source.addEventListener(ev, () => (lastEvent = Date.now()));
   for (const ev of ['rooms', 'messages', 'limits']) {
     source.addEventListener(ev, (e) => {
@@ -41,7 +62,13 @@ function connect() {
     });
   }
   source.onopen = () => listeners.status.forEach((cb) => cb('online'));
-  source.onerror = () => listeners.status.forEach((cb) => cb('offline'));
+  source.onerror = () => {
+    connect.failed = true;
+    listeners.status.forEach((cb) => cb('offline'));
+    // на 401 (пропуск устарел, DuoCode перезапущен) EventSource сдаётся сам — переподключаемся со свежим пропуском
+    const dead = source;
+    if (dead.readyState === 2) setTimeout(() => source === dead && connect(), 3000);
+  };
 }
 
 const on = (ev) => (cb) => {

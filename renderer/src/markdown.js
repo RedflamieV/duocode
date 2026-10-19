@@ -46,9 +46,36 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'IMG') {
     // адрес собран нами (см. ниже), поэтому ставим его уже после проверки DOMPurify
     if (node.__localSrc) node.setAttribute('src', node.__localSrc);
+    // Картинку из интернета сами не грузим: обманутый вредным файлом агент мог бы вписать в её адрес
+    // секреты, и запрос унёс бы их на чужой сервер. Загрузка — только по нажатию.
+    else if (/^https?:/i.test(node.getAttribute('src') || '')) {
+      node.setAttribute('data-remote', node.getAttribute('src'));
+      node.removeAttribute('src');
+    }
     node.setAttribute('loading', 'lazy');
   }
 });
+
+// Всё, чем страница могла бы сама сходить в интернет без нажатия (стили с фоном, srcset, видео, аудио, формы),
+// из ответов агентов убираем.
+const PURIFY = {
+  FORBID_TAGS: ['style', 'link', 'video', 'audio', 'source', 'track', 'picture', 'iframe', 'object', 'embed', 'form', 'input', 'svg', 'math'],
+  FORBID_ATTR: ['style', 'srcset', 'poster', 'background', 'action', 'formaction', 'ping'],
+};
+
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function remoteButtons(html) {
+  return html.replace(/<img[^>]*?data-remote="([^"]*)"[^>]*>/g, (_m, src) => {
+    const url = src.replace(/&amp;/g, '&');
+    let host = '';
+    try {
+      host = new URL(url).host;
+    } catch {
+      return '';
+    }
+    return `<button type="button" class="remote-img" data-src="${esc(url)}" title="${esc(url)}">Загрузить картинку с ${esc(host)}</button>`;
+  });
+}
 
 // Путь вроде C:\... или file:... DOMPurify отбросила бы как неизвестную схему — запоминаем
 // готовый адрес до проверки и ставим его после.
@@ -67,7 +94,7 @@ export function renderMarkdown(text, cwd = '') {
   const hit = cache.get(key);
   if (hit) return hit;
   base = cwd;
-  const html = DOMPurify.sanitize(marked.parse(text));
+  const html = remoteButtons(DOMPurify.sanitize(marked.parse(text), PURIFY));
   base = '';
   if (cache.size > 400) cache.clear();
   cache.set(key, html);

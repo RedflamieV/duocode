@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, nativeTheme, Tray, Menu, nativeImage, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, nativeTheme, Tray, Menu, nativeImage, globalShortcut, safeStorage, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -83,6 +83,22 @@ const defaults = {
 };
 let settings = { ...defaults };
 
+// Расширения, которые Windows запускает как программы или скрипты: такие файлы только показываем в папке.
+const RUNNABLE = /\.(exe|com|bat|cmd|msi|msp|scr|pif|lnk|url|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|cpl|jar|reg|application|appref-ms|gadget|msc|sh|command|app)$/i;
+
+// Токен бота — секрет: на диске он лежит зашифрованным средствами системы (DPAPI в Windows, связка ключей в macOS).
+function sealSecret(text) {
+  if (!text || !safeStorage.isEncryptionAvailable()) return null;
+  return safeStorage.encryptString(text).toString('base64');
+}
+function openSecret(sealed) {
+  try {
+    return sealed && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(sealed, 'base64')) : '';
+  } catch {
+    return '';
+  }
+}
+
 function loadSettings() {
   try {
     const saved = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
@@ -97,6 +113,10 @@ function loadSettings() {
     // старый чат только подставляем в поле как подсказку, но не доверяем ему сами.
     if (settings.telegram.chatId && !settings.telegram.userId) settings.telegram.suggestedId = settings.telegram.chatId;
     delete settings.telegram.chatId;
+    if (settings.telegram.tokenSealed) {
+      settings.telegram.token = openSecret(settings.telegram.tokenSealed) || settings.telegram.token || '';
+      delete settings.telegram.tokenSealed;
+    }
     if (projects.migrate(settings)) saveSettings();
   } catch {
     settings = { ...defaults };
@@ -105,7 +125,10 @@ function loadSettings() {
 
 function saveSettings() {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
-  fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2));
+  // в памяти токен открытый, на диске — зашифрованный (если система умеет шифровать)
+  const tokenSealed = sealSecret(settings.telegram && settings.telegram.token);
+  const onDisk = tokenSealed ? { ...settings, telegram: { ...settings.telegram, token: '', tokenSealed } } : settings;
+  fs.writeFileSync(settingsFile(), JSON.stringify(onDisk, null, 2));
 }
 
 function rememberProject(dir) {
@@ -131,6 +154,8 @@ function foldersOf(cwd) {
 
 // ---------- Мост для MCP-инструментов агентов ----------
 
+const sameSecret = (a, b) => typeof a === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
 function startBridge(rooms) {
   const token = crypto.randomBytes(24).toString('hex');
   const server = http.createServer((req, res) => {
@@ -150,7 +175,7 @@ function startBridge(rooms) {
       let out;
       try {
         const call = JSON.parse(body);
-        if (call.token !== token) out = { isError: true, text: 'Неверный токен DuoCode' };
+        if (!sameSecret(call.token, token)) out = { isError: true, text: 'Неверный токен DuoCode' };
         else out = await rooms().handleBridge(call);
       } catch (err) {
         out = { isError: true, text: 'Ошибка DuoCode: ' + err.message };
@@ -936,7 +961,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -1163,8 +1188,12 @@ function bindIpc() {
   ipcMain.handle('project:open', (_e, dir) => dir && shell.openPath(dir));
   ipcMain.handle('file:open', (_e, cwd, file) => {
     if (!file) return;
-    shell.openPath(path.isAbsolute(file) ? file : path.join(cwd || '', file));
+    const full = path.isAbsolute(file) ? file : path.join(cwd || '', file);
+    // файл мог создать агент: исполняемые и скрипты не запускаем, а показываем в папке
+    if (RUNNABLE.test(full)) shell.showItemInFolder(full);
+    else shell.openPath(full);
   });
+  ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text || '')));
 }
 
 // ---------- Старт ----------

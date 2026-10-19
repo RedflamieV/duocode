@@ -47,6 +47,26 @@ class RemoteServer extends EventEmitter {
     this.api = api; // { method: async (...args) => result }
     this.clients = new Set();
     this.port = null;
+    // ключ пропусков для адресов (поток, картинки) — свой на каждый запуск DuoCode
+    this.secret = crypto.randomBytes(32);
+  }
+
+  // Подпись Telegram (initData) живёт сутки, и её нельзя класть в адреса: они оседают в истории и логах.
+  // Поэтому мини-приложение один раз предъявляет её в заголовке и получает пропуск на 12 часов для адресов.
+  issuePass() {
+    const { userId } = this.getAuth();
+    const exp = Date.now() + 12 * 3600 * 1000;
+    const sig = crypto.createHmac('sha256', this.secret).update(`${userId}.${exp}`).digest('hex');
+    return `${exp}.${sig}`;
+  }
+
+  checkPass(pass) {
+    const { userId, token } = this.getAuth();
+    const [exp, sig] = String(pass || '').split('.');
+    if (!userId || !token || !exp || !sig || !(Number(exp) > Date.now())) return false;
+    const want = crypto.createHmac('sha256', this.secret).update(`${userId}.${exp}`).digest();
+    const got = Buffer.from(sig, 'hex');
+    return got.length === want.length && crypto.timingSafeEqual(got, want);
   }
 
   // Постоянный порт 47821 удобен для своего туннеля; если занят — любой свободный.
@@ -101,7 +121,7 @@ class RemoteServer extends EventEmitter {
     if (req.method === 'GET' && url.pathname === '/remote.css') return this.file(res, 'remote.css', 'text/css; charset=utf-8');
 
     if (req.method === 'GET' && url.pathname === '/api/events') {
-      if (!this.auth(url.searchParams.get('auth'))) return this.json(res, 401, { error: 'Нет доступа' });
+      if (!this.checkPass(url.searchParams.get('pass'))) return this.json(res, 401, { error: 'Нет доступа' });
       // no-transform запрещает Cloudflare и прокси сжимать поток (а значит, копить его в буфере),
       // а 2 КБ пробелов в начале «проталкивают» буферы, которые ждут первых килобайт
       res.writeHead(200, {
@@ -124,7 +144,7 @@ class RemoteServer extends EventEmitter {
 
     // картинки из чатов: подпись — в адресе (тег <img> не умеет слать заголовки), путь проверяет DuoCode
     if (req.method === 'GET' && url.pathname === '/api/image') {
-      if (!this.auth(url.searchParams.get('auth'))) return this.json(res, 401, { error: 'Нет доступа' });
+      if (!this.checkPass(url.searchParams.get('pass'))) return this.json(res, 401, { error: 'Нет доступа' });
       const file = this.resolveImage && this.resolveImage(url.searchParams.get('path') || '');
       if (!file) return res.writeHead(404).end();
       const TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
@@ -140,6 +160,7 @@ class RemoteServer extends EventEmitter {
         if (body.length > 2e6) return this.json(res, 413, { error: 'Слишком большой запрос' });
       }
       const { method, args = [] } = JSON.parse(body || '{}');
+      if (method === 'session') return this.json(res, 200, { result: this.issuePass() });
       const fn = Object.prototype.hasOwnProperty.call(this.api, method) && this.api[method];
       if (!fn) return this.json(res, 404, { error: `Неизвестный метод ${method}` });
       const result = await fn(...args);
@@ -186,8 +207,20 @@ class Tunnel extends EventEmitter {
     if (!asset) throw new Error('Туннель не поддерживается на этой системе');
     fs.mkdirSync(this.binDir, { recursive: true });
     this.emit('status', { state: 'downloading', progress: 0 });
-    const res = await fetch(`https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`);
+    // Берём файл и его контрольную сумму из описания последнего выпуска на GitHub и сверяем после загрузки.
+    let url = `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`;
+    let digest = null;
+    try {
+      const rel = await (await fetch('https://api.github.com/repos/cloudflare/cloudflared/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })).json();
+      const a = (rel.assets || []).find((x) => x.name === asset);
+      if (a) {
+        url = a.browser_download_url;
+        digest = /^sha256:[0-9a-f]{64}$/.test(a.digest || '') ? a.digest.slice(7) : null;
+      }
+    } catch {}
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`Не удалось скачать cloudflared: HTTP ${res.status}`);
+    const hash = crypto.createHash('sha256');
     const total = Number(res.headers.get('content-length')) || 0;
     const tmp = path.join(this.binDir, asset + '.part');
     const out = fs.createWriteStream(tmp);
@@ -195,6 +228,7 @@ class Tunnel extends EventEmitter {
     let last = 0;
     for await (const chunk of res.body) {
       out.write(chunk);
+      hash.update(chunk);
       got += chunk.length;
       if (total && Date.now() - last > 300) {
         last = Date.now();
@@ -202,6 +236,10 @@ class Tunnel extends EventEmitter {
       }
     }
     await new Promise((r) => out.end(r));
+    if (digest && hash.digest('hex') !== digest) {
+      fs.rmSync(tmp, { force: true });
+      throw new Error('Скачанный cloudflared не совпал с контрольной суммой GitHub — файл удалён. Попробуйте ещё раз.');
+    }
     if (asset.endsWith('.tgz')) {
       await new Promise((resolve, reject) => {
         const t = spawn('tar', ['-xzf', tmp, '-C', this.binDir]);

@@ -146,6 +146,15 @@ class Telegram extends EventEmitter {
       await this.api('leaveChat', { chat_id: chat.id }).catch(() => {});
     }
     const who = from ? `${from.first_name || ''} ${from.last_name || ''}`.trim() + (from.username ? ` (@${from.username})` : '') : 'неизвестный';
+    // чтобы чужой аккаунт не мог засыпать владельца уведомлениями: о каждом — не чаще раза в полчаса,
+    // и не больше десяти уведомлений в час всего
+    const now = Date.now();
+    if (!this.noticed) this.noticed = new Map();
+    const key = String(from ? from.id : chat.id);
+    const recent = [...this.noticed.values()].filter((t) => now - t < 3600000).length;
+    if (now - (this.noticed.get(key) || 0) < 30 * 60000 || recent >= 10) return;
+    this.noticed.set(key, now);
+    if (this.noticed.size > 500) this.noticed.delete(this.noticed.keys().next().value);
     this.emit('intrusion', { id: from && from.id, who, what });
     if (this.userId) {
       await this.api('sendMessage', {

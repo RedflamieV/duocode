@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, clipboard, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const on = (channel) => (cb) => {
   const handler = (_e, ...args) => cb(...args);
@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld('duo', {
   pickFolders: () => ipcRenderer.invoke('projects:pickFolders'),
   openProject: (dir) => ipcRenderer.invoke('project:open', dir),
   openFile: (cwd, file) => ipcRenderer.invoke('file:open', cwd, file),
-  copy: (text) => clipboard.writeText(text),
+  copy: (text) => ipcRenderer.invoke('clipboard:write', text),
   login: (agent) => ipcRenderer.invoke('auth:login', agent),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),

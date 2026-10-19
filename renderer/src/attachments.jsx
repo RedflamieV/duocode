@@ -11,6 +11,18 @@ export function Lightbox() {
   const [src, setSrc] = useState(null);
   useEffect(() => {
     const onClick = (e) => {
+      // картинка из интернета в ответе агента — грузим только по нажатию
+      const remote = e.target.closest && e.target.closest('.remote-img');
+      if (remote) {
+        e.preventDefault();
+        e.stopPropagation();
+        const img = document.createElement('img');
+        img.className = 'zoomable';
+        img.src = remote.dataset.src;
+        img.alt = '';
+        remote.replaceWith(img);
+        return;
+      }
       const img = e.target.closest && e.target.closest('.md img, .zoomable');
       if (!img || !img.src) return;
       e.preventDefault();
