@@ -437,6 +437,8 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
   useEffect(() => {
     const ta = ref.current;
     if (!ta) return;
+    // высоту по тексту даёт CSS field-sizing; ручной подгон — только где его нет (старые WebView)
+    if (CSS.supports('field-sizing', 'content')) return;
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 260) + 'px';
   }, [text]);

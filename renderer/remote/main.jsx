@@ -194,6 +194,8 @@ function Composer({ room, onLocal }) {
 
   useEffect(() => {
     const ta = ref.current;
+    // высоту по тексту даёт CSS field-sizing; ручной подгон — только где его нет (старые WebView)
+    if (CSS.supports('field-sizing', 'content')) return;
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
   }, [text]);
