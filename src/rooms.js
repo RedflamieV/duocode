@@ -40,9 +40,9 @@ const INSTRUCTIONS = {
 // Язык ответов (Настройки → Агенты). Инструкции DuoCode — на английском, а вокруг много английского
 // (вывод команд, код), поэтому мягкого «отвечай на языке пользователя» бывает мало.
 const LANGUAGE = {
-  ru: '- Language: always reply to the user in Russian, even when the user, these instructions, tool output or code are in another language. Keep code, identifiers, commands and file paths as they are.',
-  auto: '- Reply in the language the user writes in.',
-  en: '- Language: always reply to the user in English, even when the user, the chat history or the instructions above are in another language. Keep code, identifiers, commands and file paths as they are.',
+  ru: '- Language: the user reads Russian. Write everything the user sees in Russian, even when the user, these instructions, tool output or code are in another language: your replies, your thinking, plans and todo items, and the description of every tool call (for example the "description" field of Bash). Keep code, identifiers, commands and file paths as they are.',
+  auto: '- Reply in the language the user writes in. Write your thinking, plans, todo items and tool call descriptions in that language too.',
+  en: '- Language: the user reads English. Write everything the user sees in English, even when the user, the chat history or the instructions above are in another language: your replies, your thinking, plans and todo items, and the description of every tool call. Keep code, identifiers, commands and file paths as they are.',
 };
 
 // Что задаёт пользователь: язык ответов и свои инструкции (общие и проекта).
