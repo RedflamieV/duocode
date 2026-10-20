@@ -882,6 +882,7 @@ function setupRemote() {
       setRoomSettings: (id, patch) => rooms.updateSettings(id, patch),
       renameRoom: (id, title) => rooms.rename(id, title),
       resend: (id, msgId) => rooms.resend(id, msgId),
+      editMessage: (id, msgId, text, opts) => rooms.editMessage(id, msgId, text, opts),
       send: (id, payload) => rooms.send(id, payload),
       stop: (id) => rooms.stop(id),
       approve: (id, approvalId, decision, extra) => rooms.respondApproval(id, approvalId, decision, extra),
@@ -1014,6 +1015,7 @@ function bindIpc() {
   });
   ipcMain.handle('rooms:rename', (_e, id, title) => rooms.rename(id, title));
   ipcMain.handle('rooms:resend', (_e, id, msgId) => rooms.resend(id, msgId));
+  ipcMain.handle('rooms:edit', (_e, id, msgId, text, opts) => rooms.editMessage(id, msgId, text, opts));
   ipcMain.handle('rooms:settings', (_e, id, patch) => rooms.updateSettings(id, patch));
   ipcMain.handle('rooms:remove', (_e, id) => rooms.remove(id));
   ipcMain.handle('rooms:send', (_e, id, payload) => rooms.send(id, payload));
@@ -1230,6 +1232,15 @@ app.whenReady().then(async () => {
     pickAgent,
   });
 
+  // Ходы, упавшие из-за пропавшего интернета: раз в 15 секунд проверяем связь и, когда она вернулась, продолжаем.
+  setInterval(async () => {
+    if (!rooms.waitingForNetwork()) return;
+    const ok = await Promise.any(
+      ['https://api.anthropic.com', 'https://chatgpt.com'].map((u) => fetch(u, { method: 'HEAD', signal: AbortSignal.timeout(5000) }).then(() => true)),
+    ).catch(() => false);
+    if (ok) rooms.resumeAfterNetwork();
+  }, 15000);
+
   // чаты из версий без проектов: привязываем к проекту их папки
   let migrated = false;
   for (const r of rooms.rooms.values()) {
@@ -1249,6 +1260,10 @@ app.whenReady().then(async () => {
     telegramAttention(room, msg, part);
   });
   rooms.on('messages', (roomId, msgs) => trackProgress(roomId, msgs));
+  rooms.on('reset', (id) => {
+    if (win && !win.isDestroyed()) win.webContents.send('room-reset', id);
+    if (remote) remote.broadcast('reset', { roomId: id });
+  });
   rooms.on('memory', (cwd) => win && !win.isDestroyed() && win.webContents.send('memory', cwd));
   rooms.on('finished', (room, msg) => {
     if (msg.parentId) return;

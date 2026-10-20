@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('duo', {
   importSession: (s) => ipcRenderer.invoke('rooms:import', s),
   renameRoom: (id, title) => ipcRenderer.invoke('rooms:rename', id, title),
   resend: (id, msgId) => ipcRenderer.invoke('rooms:resend', id, msgId),
+  editMessage: (id, msgId, text, opts) => ipcRenderer.invoke('rooms:edit', id, msgId, text, opts),
+  onRoomReset: on('room-reset'),
   setRoomSettings: (id, patch) => ipcRenderer.invoke('rooms:settings', id, patch),
   removeRoom: (id) => ipcRenderer.invoke('rooms:remove', id),
   send: (id, payload) => ipcRenderer.invoke('rooms:send', id, payload),

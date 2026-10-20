@@ -327,7 +327,7 @@ function Room({ room, onLocal }) {
           {top.length === 0 && <div class="thread-empty">Напишите задачу — Claude и Codex сделают её на вашем компьютере.</div>}
           {top.map((m) =>
             m.role === 'user' ? (
-              <UserMessage msg={m} key={m.id} roomId={room.id} />
+              <UserMessage msg={m} key={m.id} roomId={room.id} room={room} />
             ) : m.role === 'system' ? (
               <SystemMessage msg={m} key={m.id} />
             ) : m.role === 'duel' ? (

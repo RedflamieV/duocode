@@ -48,6 +48,29 @@ tools.push({
   },
 });
 
+// Вопрос пользователю с вариантами ответа (у Claude есть свой AskUserQuestion, у Codex вне режима плана — нет).
+if (AGENT === 'codex') {
+  tools.push({
+    name: 'ask_user',
+    description:
+      'Ask the user a question in the DuoCode chat and wait for the answer. The user picks one of the options with a click ' +
+      '(or several, if multiSelect) or types their own answer. Use it when you need a decision from the user instead of asking in plain text ' +
+      'and stopping. Give 2-5 short, distinct options.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question, in the user language.' },
+        options: {
+          type: 'array',
+          items: { type: 'object', properties: { label: { type: 'string' }, description: { type: 'string' } }, required: ['label'] },
+        },
+        multiSelect: { type: 'boolean', description: 'Allow choosing several options.' },
+      },
+      required: ['question', 'options'],
+    },
+  });
+}
+
 // Встроенный браузер DuoCode: пользователь видит его вживую во вкладке «Браузер» боковой панели.
 if (process.env.DUO_BROWSER === '1') {
   const obj = (properties = {}, required = []) => ({ type: 'object', properties, required });

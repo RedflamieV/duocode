@@ -11,6 +11,7 @@ const LIMIT = 4096;
 // Сообщения старше этого пришли, пока DuoCode был выключен или компьютер спал (Telegram хранит их до суток).
 // Такие задачи не запускаем сами — иначе после включения всё накопленное налетело бы разом.
 const STALE_SEC = 120;
+const OFFLINE = /fetch failed|TypeError|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ENETUNREACH|ENETDOWN|socket|network|timeout|aborted/i;
 
 class Telegram extends EventEmitter {
   constructor() {
@@ -25,6 +26,7 @@ class Telegram extends EventEmitter {
     this.base = process.env.DUO_TELEGRAM_API || 'https://api.telegram.org'; // подмена — только для тестов
     this.status = 'off';
     this.backlog = []; // задачи, присланные, пока DuoCode был недоступен
+    this.outbox = []; // уведомления, не ушедшие из-за пропавшего интернета
     this.backlogTimer = null;
     this.roomsFile = null;
   }
@@ -121,6 +123,8 @@ class Telegram extends EventEmitter {
     while (id === this.loopId) {
       try {
         const updates = await this.api('getUpdates', { offset: this.offset, timeout: 50, allowed_updates: ['message', 'callback_query'] });
+        if (this.status === 'error') this.setStatus(this.userId ? 'linked' : 'needId');
+        if (this.outbox.length) this.flushOutbox();
         for (const u of updates) {
           this.offset = u.update_id + 1;
           await this.handle(u).catch(() => {});
@@ -292,9 +296,24 @@ class Telegram extends EventEmitter {
       if (roomId) this.rememberRoom(msg.message_id, roomId);
       return msg;
     } catch (err) {
+      // нет интернета — уведомление не теряем: отправим, как только связь с Telegram вернётся
+      if (OFFLINE.test(`${err.name} ${err.message} ${err.cause && err.cause.code}`)) {
+        this.outbox.push({ html, roomId, buttons, at: Date.now() });
+        if (this.outbox.length > 30) this.outbox.shift();
+        return null;
+      }
       const hint = /chat not found|bot can't initiate|blocked/i.test(err.message) ? 'Откройте своего бота в Telegram и нажмите «Старт».' : err.message;
       this.emit('status', { status: 'error', error: hint, bot: this.bot, chatId: this.userId });
       return null;
+    }
+  }
+
+  // Связь вернулась: досылаем то, что не ушло (старше 6 часов — уже неактуально), с пометкой о задержке.
+  async flushOutbox() {
+    const items = this.outbox.splice(0).filter((m) => Date.now() - m.at < 6 * 3600 * 1000);
+    for (const m of items) {
+      const min = Math.round((Date.now() - m.at) / 60000);
+      await this.send(`${m.html}\n\n<i>⏱ ${min ? `${min} мин назад` : 'только что'}, пока не было интернета</i>`, { roomId: m.roomId, buttons: m.buttons });
     }
   }
 }

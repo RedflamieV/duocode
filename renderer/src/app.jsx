@@ -1059,7 +1059,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
           {top.map((m) =>
             m.role === 'user' ? (
               <div data-msg={m.id} key={m.id}>
-                <UserMessage msg={m} roomId={room.id} />
+                <UserMessage msg={m} roomId={room.id} room={room} />
               </div>
             ) : m.role === 'system' ? (
               <SystemMessage msg={m} key={m.id} />
@@ -2041,6 +2041,8 @@ function App() {
       duo.onUpdate((u) => setUpdate({ ...u })),
       duo.onSettings((st) => setSettings(st)),
       duo.onOpenRoom((id) => open(id)),
+      // чат переписан (правка прошлого сообщения) — перечитываем его целиком
+      duo.onRoomReset((id) => id === currentRef.current && duo.getRoom(id).then((r) => r && setRoom(r))),
       (() => {
         const onLink = (e) => open(e.detail);
         window.addEventListener('duo:open-room', onLink);

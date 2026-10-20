@@ -611,7 +611,10 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
         {msg.error && (
           <div class="error-box">
             <Icon name="alert" size={15} />
-            <span>{msg.error}</span>
+            <span>
+              {msg.error}
+              {msg.netError && !msg.netResumed && <small class="net-wait">Похоже, пропал интернет. Когда связь вернётся, {NAME[msg.agent]} продолжит сам.</small>}
+            </span>
           </div>
         )}
         {msg.warning && !msg.error && running && <div class="warn-line">{msg.warning}</div>}
@@ -664,8 +667,64 @@ function Interrupted({ msg, room }) {
   );
 }
 
-export function UserMessage({ msg, roomId }) {
+// Правка прошлого сообщения: всё после него уйдёт, агенты начнут с этого места заново.
+function EditUserMessage({ msg, room, onDone }) {
+  const [text, setText] = useState(msg.text);
+  const idx = room.messages.findIndex((m) => m.id === msg.id);
+  const after = room.messages.slice(idx + 1);
+  const changed = after.some((m) => m.checkpoint && !m.checkpoint.reverted);
+  const [revert, setRevert] = useState(changed);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    try {
+      await window.duo.editMessage(room.id, msg.id, text, { revert: changed && revert });
+      onDone();
+    } catch (err) {
+      setBusy(false);
+      alert(err.message);
+    }
+  };
+  return (
+    <div class="edit-msg">
+      <textarea
+        value={text}
+        autoFocus
+        onInput={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onDone();
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save();
+        }}
+      />
+      {after.length > 0 && (
+        <small class="muted">
+          Сообщения ниже ({after.length}) будут удалены, агенты продолжат с этого места: им передастся переписка до него.
+        </small>
+      )}
+      {changed && (
+        <label class="edit-revert">
+          <input type="checkbox" checked={revert} onChange={(e) => setRevert(e.target.checked)} /> Откатить правки файлов, сделанные после этого сообщения
+        </label>
+      )}
+      <div class="edit-actions">
+        <button class="btn small ghost" onClick={onDone} disabled={busy}>
+          Отмена
+        </button>
+        <button class="btn small primary" onClick={save} disabled={busy || !text.trim()}>
+          {busy ? 'Отправляю…' : 'Отправить'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function UserMessage({ msg, roomId, room }) {
   const both = msg.targets.length > 1;
+  const [editing, setEditing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const editable = room && !msg.local && !msg.duel && !msg.pipeline && !/^\/[\w:.-]+/.test(msg.text || '');
+  if (editing) return <div class="msg user">{<EditUserMessage msg={msg} room={room} onDone={() => setEditing(false)} />}</div>;
   return (
     <div class={`msg user ${msg.local ? 'local' : ''}`}>
       <div class="user-to">
@@ -680,6 +739,26 @@ export function UserMessage({ msg, roomId }) {
       </div>
       {msg.routed && <div class="routed">{msg.routed}</div>}
       <div class="bubble">{msg.text}</div>
+      {!msg.local && (
+        <div class="user-actions">
+          <button
+            class="icon-btn tiny"
+            title="Копировать"
+            onClick={() => {
+              window.duo.copy(msg.text);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={13} />
+          </button>
+          {editable && (
+            <button class="icon-btn tiny" title="Изменить и отправить заново" onClick={() => setEditing(true)}>
+              <Icon name="edit" size={13} />
+            </button>
+          )}
+        </div>
+      )}
       {msg.attachments && msg.attachments.length > 0 && <Attachments items={msg.attachments} />}
       {msg.links && msg.links.length > 0 && (
         <div class="links sent">

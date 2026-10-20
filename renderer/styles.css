@@ -671,7 +671,7 @@ code.tool-sub { font-size: 12px; }
   line-height: 1.5;
 }
 .composer textarea::placeholder { color: var(--faint); }
-.composer-bar { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.composer-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 6px; }
 .composer-hint { font-size: 11.5px; color: var(--faint); margin-left: auto; }
 .segmented { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); }
 .seg {
@@ -1548,3 +1548,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .browser-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--muted); }
 .browser-empty p { margin: 0; max-width: 360px; font-size: 13px; line-height: 1.5; }
 .browser-empty small { color: var(--faint); font-size: 11.5px; }
+.net-wait { display: block; margin-top: 4px; color: var(--muted); }
+
+/* копировать / изменить своё сообщение */
+.user-actions { display: flex; gap: 2px; margin-top: 2px; opacity: 0; transition: opacity var(--m-fast); }
+.msg.user:hover .user-actions, .user-actions:focus-within { opacity: 1; }
+body.remote .user-actions { opacity: 1; }
+.edit-msg { width: min(100%, 640px); display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 14px; border: 1px solid var(--border-strong); background: var(--panel-2); }
+.edit-msg textarea { width: 100%; min-height: 80px; field-sizing: content; max-height: 320px; resize: vertical; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; line-height: 1.5; }
+.edit-msg small { font-size: 12px; }
+.edit-revert { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); }
+.edit-actions { display: flex; justify-content: flex-end; gap: 6px; }

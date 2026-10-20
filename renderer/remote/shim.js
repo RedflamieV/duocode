@@ -37,7 +37,7 @@ let source = null;
 let lastEvent = 0;
 
 // Действия, после которых интерфейсу стоит сразу забрать свежее состояние, не дожидаясь потока.
-const MUTATING = new Set(['send', 'stop', 'approve', 'planAction', 'revert', 'duelApply', 'setRoomSettings', 'createRoom', 'renameRoom', 'resend']);
+const MUTATING = new Set(['send', 'stop', 'approve', 'planAction', 'revert', 'duelApply', 'setRoomSettings', 'createRoom', 'renameRoom', 'resend', 'editMessage']);
 async function act(method, ...args) {
   const result = await rpc(method, ...args);
   if (MUTATING.has(method)) listeners.changed.forEach((cb) => cb(method));
@@ -61,6 +61,8 @@ async function connect() {
       for (const cb of listeners[ev]) ev === 'messages' ? cb(data.roomId, data.msgs) : cb(data);
     });
   }
+  // чат переписан на компьютере (правка прошлого сообщения) — перечитать
+  source.addEventListener('reset', () => listeners.changed.forEach((cb) => cb('reset')));
   source.onopen = () => listeners.status.forEach((cb) => cb('online'));
   source.onerror = () => {
     connect.failed = true;
@@ -83,6 +85,7 @@ window.duo = {
   setRoomSettings: (id, patch) => act('setRoomSettings', id, patch),
   renameRoom: (id, title) => act('renameRoom', id, title),
   resend: (id, msgId) => act('resend', id, msgId),
+  editMessage: (id, msgId, text, opts) => act('editMessage', id, msgId, text, opts),
   send: (id, payload) => act('send', id, payload),
   stop: (id) => act('stop', id),
   approve: (id, approvalId, decision, extra) => act('approve', id, approvalId, decision, extra),

@@ -163,10 +163,18 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
     ev.emit('done', res);
   };
 
+  let retrying = false;
   const handle = (e) => {
     switch (e.type) {
       case 'system':
         if (e.subtype === 'init' && e.session_id) ev.emit('session', e.session_id, e.model);
+        // Claude Code сам повторяет запрос при сбое сети или сервера — показываем это, а не молчим
+        if (e.subtype === 'api_retry') {
+          const sec = Math.round((e.retry_delay_ms || e.retry_in_ms || 0) / 1000);
+          const why = e.is_network_down || !e.error_status ? 'нет связи с Anthropic' : `сервер Anthropic ответил ${e.error_status}`;
+          ev.emit('warning', `Переподключаюсь: ${why}. Попытка ${e.attempt || '?'}${e.max_retries ? ` из ${e.max_retries}` : ''}${sec ? `, через ${sec} с` : ''}…`);
+          retrying = true;
+        }
         if (e.subtype === 'compact_boundary' && e.compact_metadata) {
           const m = e.compact_metadata;
           emitPart({ id: `c${n++}`, kind: 'tool', icon: 'compact', status: 'ok', title: 'Контекст сжат', subtitle: `${fmtK(m.pre_tokens)} → ${fmtK(m.post_tokens)} токенов` });
@@ -177,6 +185,10 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
         if (e.value && e.value.effective_window) ev.emit('context', { window: e.value.effective_window, threshold: e.value.threshold });
         break;
       case 'stream_event': {
+        if (retrying) {
+          retrying = false;
+          ev.emit('warning', ''); // связь вернулась
+        }
         const se = e.event || {};
         if (se.type === 'content_block_start') {
           draft = '';

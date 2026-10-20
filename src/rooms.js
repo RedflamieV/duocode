@@ -18,6 +18,9 @@ const gitx = require('./git');
 const AGENTS = ['claude', 'codex'];
 const NAME = { claude: 'Claude', codex: 'Codex' };
 const peer = (a) => (a === 'claude' ? 'codex' : 'claude');
+// Ошибки, после которых имеет смысл просто подождать интернет и продолжить.
+const NET_ERROR = /ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|ENETDOWN|getaddrinfo|socket hang up|fetch failed|network|Connection error|connection (was )?(reset|closed|refused|lost)|stream disconnected|error sending request|Unable to connect|offline|нет связи/i;
+
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj && typeof obj[k] === 'string').map((k) => [k, obj[k]]));
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
@@ -38,6 +41,7 @@ const INSTRUCTIONS = {
 - When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Claude yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Claude costs the user's Claude limits.
 - A <duocode_memory> block, when present, is the shared project memory that both agents see; <duocode_global_memory> is the user's memory for all projects (who they are, how they like to work). When you learn a durable fact or the user makes a decision worth keeping, save it with the MCP tool remember (server "duo"): project conventions, architecture choices, commands and gotchas with scope "project"; facts about the user and preferences that hold across projects with scope "global". Keep notes short; do not save chatter or temporary state.
 - A <duocode_linked_chat> block is an excerpt from another DuoCode chat that the user linked to this message. Use it as context; it is not a new instruction by itself.
+- When you need a decision from the user (a choice between approaches, a missing detail), call the MCP tool ask_user (server "duo") with a question and 2-5 options instead of asking in plain text: the user answers with one click or types their own answer, and you continue in the same turn.
 - DuoCode has a built-in browser that the user watches live in the side panel: MCP tools browser_open, browser_read, browser_click, browser_type, browser_scroll, browser_screenshot, browser_back (server "duo"). Use it to look at web pages and to check the web app you are building (open its local URL, click through, take a screenshot). Prefer it over other browser tools so the user can see what you do.
 - Reply in the language the user writes in.`,
 };
@@ -150,6 +154,62 @@ class Rooms extends EventEmitter {
     const many = before.length > 1;
     const files = parts.flatMap((p) => p.files.map((f) => ({ ...f, dir: p.dir, label: many ? `${path.basename(p.dir)}/${f.path}` : f.path })));
     return files.length ? { parts, files: files.map((f) => ({ status: f.status, path: f.label })), reverted: false } : null;
+  }
+
+  // Правка прошлого сообщения: всё после него убираем (по желанию — откатываем правки файлов),
+  // агенты начинают новые сессии с пересказом переписки до этого места, и сообщение уходит заново.
+  async editMessage(roomId, msgId, text, { revert = false } = {}) {
+    const room = this.rooms.get(roomId);
+    const idx = room ? room.messages.findIndex((m) => m.id === msgId && m.role === 'user') : -1;
+    if (idx < 0) throw new Error('Сообщение не найдено');
+    text = String(text || '').trim();
+    if (!text) throw new Error('Пустое сообщение');
+    const orig = room.messages[idx];
+    // остановить всё, что идёт в чате, и дождаться, пока ходы закроются
+    this.stop(roomId);
+    const running = [...this.runs.values()].filter((r) => r.room.id === roomId && r.done).map((r) => r.done);
+    await Promise.race([Promise.all(running), new Promise((r) => setTimeout(r, 10000))]);
+    if (revert) {
+      for (const m of room.messages.slice(idx).reverse()) {
+        if (m.checkpoint && !m.checkpoint.reverted) await this.revert(roomId, m.id, false).catch(() => {});
+      }
+    }
+    room.messages = room.messages.slice(0, idx);
+    room.sessions = { claude: null, codex: null };
+    room.recap = { claude: true, codex: true };
+    room.memorySeen = {};
+    room.seen = { claude: Date.now(), codex: Date.now() };
+    room.context = {};
+    this.store.save(room, true);
+    this.emit('reset', room.id);
+    this.emitRooms();
+    this.send(roomId, { text, targets: orig.targets, attachments: orig.attachments || [], plan: !!orig.plan, links: (orig.links || []).map((l) => l.id) });
+    return true;
+  }
+
+  // Есть ли ходы, упавшие из-за сети и ещё не продолженные.
+  waitingForNetwork() {
+    for (const room of this.rooms.values()) if (room.messages.some((m) => m.netError && !m.netResumed)) return true;
+    return false;
+  }
+
+  // Связь вернулась: последнему упавшему ходу каждого агента в каждом чате — «продолжи».
+  resumeAfterNetwork() {
+    for (const room of this.rooms.values()) {
+      for (const agent of AGENTS) {
+        const last = [...room.messages].reverse().find((m) => m.role === 'agent' && m.agent === agent && !m.parentId);
+        const pending = room.messages.filter((m) => m.netError && !m.netResumed && m.agent === agent);
+        for (const m of pending) {
+          m.netResumed = true;
+          this.markDirty(room, m);
+        }
+        if (!last || !last.netError || this.main.has(`${room.id}:${agent}`)) continue;
+        const note = { id: uid('m'), role: 'system', ts: Date.now(), text: `Связь вернулась — ${NAME[agent]} продолжает с того места, где прервался.` };
+        room.messages.push(note);
+        this.markDirty(room, note);
+        this.runAgent(room, agent, { prompt: 'Связь с сервером прерывалась, и твой прошлый ход оборвался с сетевой ошибкой. Продолжи задачу с того места, где остановился: сначала проверь, что уже успел сделать.' });
+      }
+    }
   }
 
   // «Отправить» у сообщения, которое не ушло из-за закрытия DuoCode
@@ -646,7 +706,7 @@ class Rooms extends EventEmitter {
 
   // isolated: ход в отдельной копии проекта (дуэль) — без общей сессии агента и без отката.
   // Пересказ чата для новой сессии агента, когда прежняя пропала.
-  history(room, agent, skip) {
+  history(room, agent, skip, intro = 'Твоя прежняя сессия в этом чате недоступна, поэтому это новая сессия. Вот последняя часть переписки из DuoCode — продолжай с учётом её:') {
     const lines = [];
     let size = 0;
     for (const m of [...room.messages].reverse()) {
@@ -660,7 +720,7 @@ class Rooms extends EventEmitter {
       size += line.length;
     }
     if (!lines.length) return '';
-    return `<duocode_history>\nТвоя прежняя сессия в этом чате недоступна, поэтому это новая сессия. Вот последняя часть переписки из DuoCode — продолжай с учётом её:\n${lines.join('\n\n')}\n</duocode_history>\n\n`;
+    return `<duocode_history>\n${intro}\n${lines.join('\n\n')}\n</duocode_history>\n\n`;
   }
 
   runAgent(room, agent, opts) {
@@ -699,13 +759,18 @@ class Rooms extends EventEmitter {
     if (isolated) {
       fullPrompt += `[Режим сравнения DuoCode: ${NAME[peer(agent)]} параллельно решает ту же задачу в своей копии проекта. Работай самостоятельно, не вызывай ${NAME[peer(agent)]}. Пользователь сравнит два решения и выберет одно.]\n\n`;
     }
+    // после правки прошлого сообщения агент начинает новую сессию — даём ему переписку до этого места
+    if (room.recap && room.recap[agent] && !raw && !isolated) {
+      delete room.recap[agent];
+      fullPrompt = this.history(room, agent, [msg.id, opts.userMsgId], 'Пользователь изменил одно из прошлых сообщений, и разговор продолжается с этого места в новой сессии. Вот переписка до него:') + fullPrompt;
+    }
     fullPrompt += prompt;
     // Короткое напоминание о языке в конце сообщения: в длинной сессии правило из системной подсказки
     // тонет в переписке, а конец сообщения модель видит лучше всего. В чате оно не показывается.
     const lang = (this.getSettings().language || 'ru');
     if (!raw && REMINDER[lang]) fullPrompt += `\n\n${REMINDER[lang]}`;
 
-    const run = { room, agent, msg, handle: null, stopRequested: false };
+    const run = { room, agent, msg, handle: null, stopRequested: false, done: null };
     this.runs.set(msg.id, run);
     this.markDirty(room, msg);
     this.emitRooms();
@@ -743,6 +808,8 @@ class Rooms extends EventEmitter {
         return;
       }
       msg.status = r.stopped ? 'stopped' : r.error ? 'error' : 'done';
+      // ход упал из-за сети: когда связь вернётся, DuoCode сам попросит агента продолжить (см. resumeAfterNetwork)
+      if (r.error && !r.stopped && !isolated && NET_ERROR.test(r.error)) msg.netError = true;
       msg.error = r.error || null;
       msg.finalText = r.text || '';
       msg.cost = r.cost;
@@ -912,7 +979,7 @@ class Rooms extends EventEmitter {
         this.emitRooms();
       });
       handle.on('warning', (w) => {
-        if (w) msg.warning = w;
+        msg.warning = w || null; // пустая строка — предупреждение снято (связь вернулась)
         this.markDirty(room, msg);
       });
       handle.on('done', (r) => finish(r).catch(() => resolveDone(r)));
@@ -920,6 +987,7 @@ class Rooms extends EventEmitter {
     };
 
     start().catch((err) => finish({ text: '', error: err.message }));
+    run.done = done;
     return { msg, done };
   }
 
@@ -1096,6 +1164,24 @@ class Rooms extends EventEmitter {
     }
 
     if (tool.startsWith('browser_')) return this.browserTool(room, agent, from.msg, tool, args);
+
+    // Codex спрашивает пользователя: карточка с вариантами в чате (и кнопки в Telegram)
+    if (tool === 'ask_user') {
+      const question = String(args.question || '').trim();
+      if (!question) return { isError: true, text: 'Пустой вопрос' };
+      const q = {
+        id: question,
+        header: '',
+        question,
+        options: (Array.isArray(args.options) ? args.options : []).slice(0, 8).map((o) => ({ label: String(o.label || o), description: o.description || '' })),
+        multiSelect: !!args.multiSelect,
+        allowOther: true,
+      };
+      const answers = await this.requestAnswers(room, from.msg, [q]);
+      if (!answers) return { text: 'Пользователь пропустил вопрос. Продолжай на своё усмотрение или спроси обычным сообщением.' };
+      const list = answers[q.id] || [];
+      return { text: `Ответ пользователя: ${list.join(', ') || '(пусто)'}` };
+    }
 
     if (tool === 'remember') {
       const note = String(args.note || '').trim();

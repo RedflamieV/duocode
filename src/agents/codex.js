@@ -241,6 +241,7 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
   let turnId = null;
   let tid = null;
   let finished = false;
+  let retrying = false;
   let lastText = '';
 
   const emitPart = (p) => {
@@ -273,6 +274,10 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
           break;
         }
         case 'item/agentMessage/delta': {
+          if (retrying) {
+            retrying = false;
+            ev.emit('warning', '');
+          }
           const p = parts.get(params.itemId) || { id: params.itemId, kind: 'text', text: '' };
           p.text = (p.text || '') + params.delta;
           parts.set(p.id, p);
@@ -308,7 +313,11 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
           break;
         }
         case 'error':
-          if (!params.willRetry) ev.emit('warning', params.error && params.error.message);
+          // Codex сам повторяет при обрыве связи — показываем, что он переподключается
+          if (params.willRetry) {
+            ev.emit('warning', `Переподключаюсь: связь с OpenAI прервалась${params.error && params.error.message ? ` (${String(params.error.message).slice(0, 120)})` : ''}…`);
+            retrying = true;
+          } else ev.emit('warning', params.error && params.error.message);
           break;
         case 'turn/completed': {
           const turn = params.turn || {};
