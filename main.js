@@ -27,6 +27,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 // ---------- Настройки ----------
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
+app.whenReady().then(() => memory.setGlobalDir(app.getPath('userData')));
 const APPEARANCE = {
   theme: 'system',
   fontSize: 14,
@@ -139,11 +140,11 @@ function rememberProject(dir) {
 }
 
 // Новый чат: в существующем проекте (projectId) или в папке (cwd), для которой проект заведётся сам.
-function createRoom({ projectId, cwd, title }) {
+function createRoom({ projectId, cwd, title, settings: chosen }) {
   let project = projectId && projects.get(settings, projectId);
   if (!project) project = rememberProject(cwd);
   else rememberProject(project.folders[0]);
-  return rooms.create({ cwd: project.folders[0], projectId: project.id, title });
+  return rooms.create({ cwd: project.folders[0], projectId: project.id, title, chosen });
 }
 
 // Папки проекта, где эта папка основная (для поиска файлов и панели Git).

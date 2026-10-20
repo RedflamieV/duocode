@@ -681,6 +681,15 @@ export function UserMessage({ msg, roomId }) {
       {msg.routed && <div class="routed">{msg.routed}</div>}
       <div class="bubble">{msg.text}</div>
       {msg.attachments && msg.attachments.length > 0 && <Attachments items={msg.attachments} />}
+      {msg.links && msg.links.length > 0 && (
+        <div class="links sent">
+          {msg.links.map((l) => (
+            <button class="link-chip" key={l.id} title="Агент получил последние сообщения этого чата. Нажмите, чтобы открыть его" onClick={() => window.dispatchEvent(new CustomEvent('duo:open-room', { detail: l.id }))}>
+              <Icon name="chat" size={12} /> {l.title}
+            </button>
+          ))}
+        </div>
+      )}
       {msg.unsent && msg.unsent.length > 0 && roomId && (
         <div class="interrupted user-side">
           <Icon name="alert" size={13} />

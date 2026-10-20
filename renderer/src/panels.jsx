@@ -158,30 +158,44 @@ function GitPanel({ cwd }) {
 
 // ---------- Панель «Память проекта» ----------
 
+const GLOBAL = '*global*'; // так main.js понимает «глобальная память»
+
 function MemoryPanel({ cwd }) {
+  const [scope, setScope] = useState('project');
+  const where = scope === 'global' ? GLOBAL : cwd;
   const [text, setText] = useState('');
   const [saved, setSaved] = useState('');
   const [file, setFile] = useState('');
   const load = async () => {
-    const r = await duo.memoryGet(cwd);
+    const r = await duo.memoryGet(where);
     setText(r.text);
     setSaved(r.text);
     setFile(r.file);
   };
   useEffect(() => {
     load();
-    return duo.onMemory((dir) => dir === cwd && load());
-  }, [cwd]);
+    return duo.onMemory((dir) => dir === where && load());
+  }, [where]);
   const dirty = text !== saved;
   return (
     <div class="memory-panel">
+      <div class="segmented wide">
+        <button class={`seg ${scope === 'project' ? 'active' : ''}`} onClick={() => setScope('project')}>
+          Проект
+        </button>
+        <button class={`seg ${scope === 'global' ? 'active' : ''}`} onClick={() => setScope('global')}>
+          Глобальная
+        </button>
+      </div>
       <p class="muted small">
-        Общая память проекта: её видят оба агента в каждом чате этого проекта, и оба могут её дополнять. Пишите сюда договорённости, команды, важные решения.
+        {scope === 'project'
+          ? 'Память проекта: её видят оба агента в каждом чате этого проекта, и оба могут её дополнять. Договорённости, команды, важные решения.'
+          : 'Глобальная память: её видят оба агента во всех проектах. О вас и ваших привычках: как объяснять, ваша система и инструменты, общие правила.'}
       </p>
       <textarea
         class="memory-text"
         value={text}
-        placeholder={'# Память проекта\n\n- Тесты: npm test\n- Стиль: …'}
+        placeholder={scope === 'project' ? '# Память проекта\n\n- Тесты: npm test\n- Стиль: …' : '# Глобальная память\n\n- Windows 11, PowerShell\n- Объясняй простыми словами'}
         onInput={(e) => setText(e.target.value)}
         spellcheck={false}
       />
@@ -190,7 +204,7 @@ function MemoryPanel({ cwd }) {
           class="btn small primary"
           disabled={!dirty}
           onClick={async () => {
-            await duo.memorySet(cwd, text);
+            await duo.memorySet(where, text);
             setSaved(text);
           }}
         >
@@ -202,7 +216,7 @@ function MemoryPanel({ cwd }) {
           </button>
         )}
         <span class="muted small path-hint" title={file}>
-          .duocode/memory.md
+          {scope === 'global' ? 'memory.md в папке DuoCode' : '.duocode/memory.md'}
         </span>
       </div>
     </div>

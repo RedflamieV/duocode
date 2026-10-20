@@ -413,7 +413,28 @@ function FileMenu({ items, active, onPick }) {
   );
 }
 
-function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [], cwd = null, pipelines = [], focusTick = 0 }) {
+// #чат: ссылка на другой чат — агент получит выдержку из него.
+function ChatMenu({ items, active, onPick }) {
+  return (
+    <div class="cmd-menu">
+      <div class="cmd-item dim">Сослаться на чат — агент получит его последние сообщения</div>
+      {items.length === 0 && <div class="cmd-item dim">Ничего не найдено</div>}
+      {items.map((r, i) => (
+        <button key={r.id} class={`cmd-item ${i === active ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); onPick(r); }}>
+          <Icon name="chat" size={13} />
+          <span class="cmd-name">{r.title}</span>
+          <span class="cmd-desc">{fmtAgo(r.updatedAt)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [], cwd = null, pipelines = [], focusTick = 0, roomId = null }) {
+  const [links, setLinks] = useState([]); // чаты, на которые ссылается сообщение
+  const [chatList, setChatList] = useState(null);
+  const [chatIndex, setChatIndex] = useState(0);
+  const [chatHidden, setChatHidden] = useState(false);
   const [duel, setDuel] = useState(false);
   const [pipeline, setPipeline] = useState(null);
   const [pipeMenu, setPipeMenu] = useState(false);
@@ -463,6 +484,24 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
     };
   }, [atQuery, cwd]);
   const showFiles = atQuery !== null && !!cwd;
+  // #запрос перед курсором — выбор чата для ссылки
+  const hashMatch = !showFiles && /(^|\s)#([^\s#]*)$/.exec(text.slice(0, caret));
+  const hashQuery = hashMatch && !chatHidden ? hashMatch[2] : null;
+  useEffect(() => {
+    if (hashQuery !== null) duo.listRooms().then(setChatList);
+  }, [hashQuery !== null]);
+  const chatItems =
+    hashQuery !== null && chatList
+      ? chatList.filter((r) => r.id !== roomId && !links.some((l) => l.id === r.id) && r.title.toLowerCase().includes(hashQuery.toLowerCase())).slice(0, 10)
+      : [];
+  const showChats = hashQuery !== null && !!chatList;
+  const pickChat = (r) => {
+    const before = text.slice(0, caret).replace(/#([^\s#]*)$/, '');
+    setText(before + text.slice(caret));
+    setLinks((l) => [...l, { id: r.id, title: r.title }]);
+    setChatIndex(0);
+    if (ref.current) ref.current.focus();
+  };
   const pickFile = (f) => {
     const before = text.slice(0, caret).replace(/@([^\s@]*)$/, '');
     setText(before + text.slice(caret));
@@ -504,11 +543,13 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
   const submit = () => {
     if (!canSend) return;
     const opts = { attachments: files, plan };
+    if (links.length) opts.links = links.map((l) => l.id);
     if (pipeline) opts.pipeline = pipeline;
     else if (duel && effective === 'both') opts.duel = true;
     onSend(mention.text, agents, opts);
     setText('');
     setFiles([]);
+    setLinks([]);
     setPlan(false);
     setPipeline(null);
   };
@@ -524,8 +565,8 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
     : plan
       ? 'Сначала план: агент изучит задачу и предложит план, вы его утвердите'
       : prefs.sendKey === 'ctrl'
-        ? 'Ctrl+Enter — отправить · / — команды'
-        : 'Enter — отправить · Shift+Enter — новая строка · / — команды';
+        ? 'Ctrl+Enter — отправить · / — команды · # — другой чат'
+        : 'Enter — отправить · Shift+Enter — новая строка · / — команды · # — другой чат';
 
   return (
     <div
@@ -538,7 +579,20 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
       onDrop={onDrop}
     >
       {showFiles && <FileMenu items={fileItems} active={Math.min(fileIndex, Math.max(0, fileItems.length - 1))} onPick={pickFile} />}
-      {!showFiles && cmdItems.length > 0 && <CommandMenu items={cmdItems} active={Math.min(cmdIndex, cmdItems.length - 1)} agents={agents} onPick={pickCommand} />}
+      {showChats && <ChatMenu items={chatItems} active={Math.min(chatIndex, Math.max(0, chatItems.length - 1))} onPick={pickChat} />}
+      {links.length > 0 && (
+        <div class="links">
+          {links.map((l, i) => (
+            <span class="link-chip" key={l.id} title="Агент получит последние сообщения этого чата">
+              <Icon name="chat" size={12} /> {l.title}
+              <button class="attachment-x" onClick={() => setLinks(links.filter((_, j) => j !== i))} title="Убрать">
+                <Icon name="x" size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {!showFiles && !showChats && cmdItems.length > 0 && <CommandMenu items={cmdItems} active={Math.min(cmdIndex, cmdItems.length - 1)} agents={agents} onPick={pickCommand} />}
       <Attachments items={files} onRemove={(i) => setFiles(files.filter((_, j) => j !== i))} />
       <textarea
         ref={ref}
@@ -549,9 +603,26 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
           setText(e.target.value);
           setCmdHidden(false);
           setCmdIndex(0);
+          setChatHidden(false);
         }}
         onPaste={onPaste}
         onKeyDown={(e) => {
+          if (showChats) {
+            if (chatItems.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+              e.preventDefault();
+              setChatIndex((chatIndex + (e.key === 'ArrowDown' ? 1 : chatItems.length - 1)) % chatItems.length);
+              return;
+            }
+            if (chatItems.length && (e.key === 'Enter' || e.key === 'Tab')) {
+              e.preventDefault();
+              pickChat(chatItems[Math.min(chatIndex, chatItems.length - 1)]);
+              return;
+            }
+            if (e.key === 'Escape') {
+              setChatHidden(true);
+              return;
+            }
+          }
           if (showFiles && fileItems.length) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault();
@@ -750,6 +821,8 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
       </button>
       {open && (
         <div class="menu agent-menu">
+          {onCommand && (
+          <>
           <div class="menu-section">Контекст</div>
           <div class="context-box">
             {pct != null ? (
@@ -777,6 +850,8 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
               </button>
             </div>
           </div>
+          </>
+          )}
           <div class="menu-section">Модель {NAME[agent]}</div>
           {models.map((m) => (
             <button key={m.id} class={`menu-option ${m.id === model ? 'selected' : ''}`} onClick={() => onChange({ model: m.id })}>
@@ -1007,6 +1082,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
           autoFocus={room.id}
           commands={commands}
           cwd={room.cwd}
+          roomId={room.id}
           pipelines={pipelines}
           focusTick={focusTick}
         />
@@ -1171,6 +1247,14 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
   useEffect(() => {
     duo.commands(project || null).then(setCommands);
   }, [project]);
+  // модели нового чата: по умолчанию — из Настроек → Агенты, здесь можно поменять только для этого чата
+  const nc = settings.newChat || {};
+  const [models, setModels] = useState({ claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' });
+  const [codexModels, setCodexModels] = useState([]);
+  useEffect(() => {
+    duo.codexModels().then((m) => setCodexModels(m || [])).catch(() => {});
+  }, []);
+  const setModel = (patch) => setModels((m) => ({ ...m, ...patch }));
 
   useEffect(() => {
     duo.history().then(setHistory);
@@ -1184,10 +1268,11 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
 
   const send = async (text, agents, opts = {}) => {
     if (!current) return onEditProject({ name: '', folders: [] }, (p) => setProjectId(p.id));
-    const room = await duo.createRoom({ projectId: current.id });
-    await duo.send(room.id, { text, targets: agents, ...opts });
+    const room = await duo.createRoom({ projectId: current.id, settings: models });
     store(`target:${room.id}`, target);
+    // сначала открываем чат, потом отправляем — долгий сценарий не должен держать на этом экране
     onCreated(room.id);
+    await duo.send(room.id, { text, targets: agents, ...opts });
   };
 
   const importSession = async (s) => {
@@ -1245,6 +1330,30 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
             ))}
           </div>
         )}
+        <div class="new-models">
+          <span class="muted">Модели:</span>
+          <AgentChip
+            agent="claude"
+            model={models.claudeModel}
+            effort={models.claudeEffort}
+            models={CLAUDE_MODELS}
+            efforts={CLAUDE_EFFORTS}
+            onChange={(p) => setModel('model' in p ? { claudeModel: p.model } : { claudeEffort: p.effort })}
+          />
+          <AgentChip
+            agent="codex"
+            model={models.codexModel}
+            effort={models.codexEffort}
+            models={[{ id: '', name: 'По умолчанию', description: 'Модель из настроек Codex' }, ...codexModels.map((m) => ({ id: m.id, name: m.name, description: m.isDefault ? 'модель по умолчанию' : '' }))]}
+            efforts={codexEfforts(codexModels, models.codexModel)}
+            onChange={(p) => {
+              if ('model' in p) {
+                const ok = codexEfforts(codexModels, p.model).some((e) => e.id === models.codexEffort);
+                setModel({ codexModel: p.model, ...(ok ? {} : { codexEffort: '' }) });
+              } else setModel({ codexEffort: p.effort });
+            }}
+          />
+        </div>
         <Composer
           onSend={send}
           target={target}
@@ -1924,6 +2033,11 @@ function App() {
       duo.onUpdate((u) => setUpdate({ ...u })),
       duo.onSettings((st) => setSettings(st)),
       duo.onOpenRoom((id) => open(id)),
+      (() => {
+        const onLink = (e) => open(e.detail);
+        window.addEventListener('duo:open-room', onLink);
+        return () => window.removeEventListener('duo:open-room', onLink);
+      })(),
       duo.onNewChat(() => open(null)),
       duo.onFocusComposer(() => setFocusTick((t) => t + 1)),
     ];

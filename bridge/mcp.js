@@ -34,11 +34,16 @@ const tools = [
 tools.push({
   name: 'remember',
   description:
-    'Save a short durable note to the shared project memory that both agents (Claude and Codex) see in every chat of this project: ' +
-    'conventions, architecture decisions, useful commands, gotchas, user preferences. Not for temporary state.',
+    'Save a short durable note that both agents (Claude and Codex) will see in later chats. ' +
+    'scope "project" (default): this project only — conventions, architecture decisions, useful commands, gotchas. ' +
+    'scope "global": every project — facts about the user and preferences that are not tied to this project ' +
+    '(how they like answers, their OS and tools, general habits). Not for temporary state.',
   inputSchema: {
     type: 'object',
-    properties: { note: { type: 'string', description: 'One short fact or decision, in the user language.' } },
+    properties: {
+      note: { type: 'string', description: 'One short fact or decision, in the user language.' },
+      scope: { type: 'string', enum: ['project', 'global'], description: 'Where to save it. Default: project.' },
+    },
     required: ['note'],
   },
 });

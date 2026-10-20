@@ -1521,3 +1521,10 @@ html.theme-switching, html.theme-switching *, html.theme-switching *::before, ht
 .remote-img { display: inline-flex; align-items: center; gap: 6px; margin: 6px 0; padding: 7px 12px; border-radius: 8px; border: 1px dashed var(--border-strong); background: var(--panel); color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .remote-img::before { content: "🖼"; }
 .remote-img:hover { color: var(--text); border-color: var(--faint); }
+.new-models { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 0 0 8px; font-size: 12.5px; }
+.new-models .agent-menu { max-height: 60vh; }
+.links { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.links.sent { justify-content: flex-end; margin: 6px 0 0; }
+.link-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 280px; padding: 3px 6px 3px 9px; border-radius: 999px; font-size: 12px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.links.sent .link-chip { padding-right: 9px; cursor: pointer; }
+.links.sent .link-chip:hover { color: var(--text); border-color: var(--border-strong); }
