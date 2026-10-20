@@ -749,15 +749,20 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
             </div>
           )}
         </div>
-        <span class={`composer-hint ${steering ? 'steer' : ''}`}>{hint}</span>
-        {running && (
-          <button class="stop-btn" onClick={onStop} title="Остановить всех агентов в этом чате">
-            <Icon name="stop" size={16} />
+        {/* подсказка сжимается с многоточием, а кнопки всегда вместе справа и не уезжают на новую строку */}
+        <span class="composer-end">
+          <span class={`composer-hint ${steering ? 'steering' : ''}`} title={hint}>
+            {hint}
+          </span>
+          {running && (
+            <button class="stop-btn" onClick={onStop} title="Остановить всех агентов в этом чате">
+              <Icon name="stop" size={16} />
+            </button>
+          )}
+          <button class="send-btn" onClick={submit} disabled={!canSend} title={steering ? 'Дописать в текущую работу' : 'Отправить'}>
+            <Icon name={steering ? 'plus' : 'up'} size={16} />
           </button>
-        )}
-        <button class="send-btn" onClick={submit} disabled={!canSend} title={steering ? 'Дописать в текущую работу' : 'Отправить'}>
-          <Icon name={steering ? 'plus' : 'up'} size={16} />
-        </button>
+        </span>
       </div>
     </div>
   );

@@ -672,7 +672,7 @@ code.tool-sub { font-size: 12px; }
 }
 .composer textarea::placeholder { color: var(--faint); }
 .composer-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 6px; }
-.composer-hint { font-size: 11.5px; color: var(--faint); margin-left: auto; }
+.composer-hint { font-size: 11.5px; color: var(--faint); }
 .segmented { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); }
 .seg {
   display: inline-flex;
@@ -939,7 +939,7 @@ code.tool-sub { font-size: 12px; }
 .toggle:hover { color: var(--text); }
 .toggle.on { color: var(--text); border-color: var(--warn); background: var(--warn-soft); }
 .composer-hint { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
-.composer-hint.steer { color: var(--warn); }
+.composer-hint.steering { color: var(--warn); }
 .plan-tag { color: var(--muted); }
 
 /* ---------- Вопросы и планы ---------- */
@@ -1610,7 +1610,6 @@ body.remote .user-actions { opacity: 1; }
 .budget-chip { font-variant-numeric: tabular-nums; }
 .budget-chip.over { color: var(--danger); border-color: var(--danger); }
 .budget-input { width: 140px; }
-.composer-bar .send-btn, .composer-bar .stop-btn { margin-left: auto; }
 
 /* расписание */
 .sched-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
@@ -1622,3 +1621,7 @@ body.remote .user-actions { opacity: 1; }
 .week { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--panel-2); }
 .week .seg { padding: 4px 8px; min-width: 32px; }
 .time-input { width: 110px; height: 32px; }
+/* правый край строки под полем: подсказка (сжимается) + кнопки (никогда не переносятся) */
+.composer-end { flex: 1 1 0; min-width: 72px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.composer-end .composer-hint { display: block; flex: 0 1 auto; min-width: 0; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composer-end .send-btn, .composer-end .stop-btn { flex: none; }
