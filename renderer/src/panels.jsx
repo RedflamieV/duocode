@@ -328,9 +328,160 @@ function BrowserPanel() {
   );
 }
 
+// ---------- Терминал ----------
+
+// Цвета ANSI → кусочки текста с классами. Перерисовка строки (\r) оставляет последнее состояние строки.
+const SGR_COLORS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+function ansiLines(raw, limit = 3000) {
+  const lines = raw.replace(/\r\n/g, '\n').split('\n').slice(-limit);
+  let cls = [];
+  return lines.map((line) => {
+    line = line.split('\r').filter((x, i, a) => x || i === a.length - 1).pop() || '';
+    const out = [];
+    let last = 0;
+    const re = /\x1b\[([0-9;?]*)([A-Za-z])|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g;
+    let m;
+    while ((m = re.exec(line))) {
+      if (m.index > last) out.push({ text: line.slice(last, m.index), cls: cls.join(' ') });
+      last = re.lastIndex;
+      if (m[2] !== 'm') continue;
+      const codes = (m[1] || '0').split(';').map(Number);
+      for (let i = 0; i < codes.length; i++) {
+        const c = codes[i];
+        if (c === 0) cls = [];
+        else if (c === 1) cls = [...cls.filter((x) => x !== 'b'), 'b'];
+        else if (c === 2) cls = [...cls.filter((x) => x !== 'dim'), 'dim'];
+        else if (c === 22) cls = cls.filter((x) => x !== 'b' && x !== 'dim');
+        else if (c === 4) cls = [...cls, 'u'];
+        else if (c >= 30 && c <= 37) cls = [...cls.filter((x) => !x.startsWith('fg-')), `fg-${SGR_COLORS[c - 30]}`];
+        else if (c >= 90 && c <= 97) cls = [...cls.filter((x) => !x.startsWith('fg-')), `fg-${SGR_COLORS[c - 90]}`];
+        else if (c === 39) cls = cls.filter((x) => !x.startsWith('fg-'));
+        else if (c === 38 || c === 48) i += codes[i + 1] === 5 ? 2 : 4; // 256 цветов и truecolor — пропускаем
+      }
+    }
+    if (last < line.length) out.push({ text: line.slice(last), cls: cls.join(' ') });
+    return out;
+  });
+}
+
+const BY = { user: 'вы', claude: 'Claude', codex: 'Codex' };
+
+function TerminalPanel({ cwd }) {
+  const [list, setList] = useState([]);
+  const [active, setActive] = useState(null);
+  const [out, setOut] = useState('');
+  const [cmd, setCmd] = useState('');
+  const [stdin, setStdin] = useState('');
+  const box = useRef();
+  const stick = useRef(true);
+  const activeRef = useRef(null);
+  activeRef.current = active;
+  useEffect(() => {
+    duo.term.list().then((l) => {
+      setList(l);
+      if (l.length) setActive((a) => a || l[l.length - 1].id);
+    });
+    const offs = [
+      duo.onTermList((l) => {
+        setList(l);
+        setActive((a) => (a && l.some((x) => x.id === a) ? a : l.length ? l[l.length - 1].id : null));
+      }),
+      duo.onTermData((id, data) => id === activeRef.current && setOut((o) => (o + data).slice(-200000))),
+    ];
+    return () => offs.forEach((f) => f());
+  }, []);
+  useEffect(() => {
+    if (!active) return setOut('');
+    stick.current = true;
+    duo.term.output(active).then(setOut);
+  }, [active]);
+  useEffect(() => {
+    const el = box.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [out]);
+  const lines = useMemo(() => ansiLines(out), [out]);
+  const cur = list.find((x) => x.id === active);
+  const run = async (e) => {
+    e.preventDefault();
+    if (!cmd.trim()) return;
+    const t = await duo.term.start(cmd.trim(), cwd);
+    setCmd('');
+    setActive(t.id);
+  };
+  return (
+    <div class="term-panel">
+      {list.length > 0 && (
+        <div class="term-tabs">
+          {list.map((t) => (
+            <button key={t.id} class={`term-tab ${t.id === active ? 'active' : ''}`} onClick={() => setActive(t.id)} title={`${t.command}\n${t.cwd}\nЗапустил: ${BY[t.by] || t.by}`}>
+              <i class={`term-dot ${t.status === 'running' ? 'on' : t.code ? 'err' : ''}`} />
+              <span>{t.command}</span>
+              {t.by !== 'user' && <small>{BY[t.by]}</small>}
+            </button>
+          ))}
+        </div>
+      )}
+      <div
+        class="term-out"
+        ref={box}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        }}
+      >
+        {!cur && (
+          <div class="term-empty">
+            Здесь видны процессы: dev-сервер, сборка, тесты. Запустите команду ниже — или агент запустит её сам, и вы увидите вывод вживую.
+          </div>
+        )}
+        {cur &&
+          lines.map((l, i) => (
+            <div class="term-line" key={i}>
+              {l.length ? l.map((s, j) => (s.cls ? <span class={s.cls} key={j}>{s.text}</span> : s.text)) : '\u00a0'}
+            </div>
+          ))}
+      </div>
+      {cur && (
+        <div class="term-actions">
+          <span class="muted small">
+            {cur.status === 'running' ? 'работает' : `завершён${cur.code != null ? `, код ${cur.code}` : ''}`} · {cur.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop()}
+          </span>
+          {cur.status === 'running' ? (
+            <button class="btn small" onClick={() => duo.term.stop(cur.id)}>
+              <Icon name="stop" size={12} /> Стоп
+            </button>
+          ) : (
+            <button class="btn small ghost" onClick={() => duo.term.remove(cur.id)}>
+              Убрать
+            </button>
+          )}
+        </div>
+      )}
+      {cur && cur.status === 'running' && (
+        <form
+          class="term-input"
+          onSubmit={(e) => {
+            e.preventDefault();
+            duo.term.write(cur.id, stdin).catch(() => {});
+            setStdin('');
+          }}
+        >
+          <span>↳</span>
+          <input value={stdin} placeholder="Ввод в процесс (Enter — отправить)" onInput={(e) => setStdin(e.target.value)} spellcheck={false} />
+        </form>
+      )}
+      <form class="term-input new" onSubmit={run}>
+        <span>$</span>
+        <input value={cmd} placeholder="Новая команда, например npm run dev" onInput={(e) => setCmd(e.target.value)} spellcheck={false} />
+      </form>
+    </div>
+  );
+}
+
 export function SidePanel({ room, folders, tab, setTab, onClose }) {
-  const [folder, setFolder] = useState(room.cwd);
-  useEffect(() => setFolder(room.cwd), [room.id]);
+  const main = room.workdir || room.cwd;
+  const [folder, setFolder] = useState(main);
+  useEffect(() => setFolder(main), [room.id, main]);
   // ширину панели можно менять, потянув за левый край
   const [width, setWidth] = useState(() => Number(localStorage.getItem('duo:panel-width')) || 0);
   const startResize = (e) => {
@@ -354,13 +505,14 @@ export function SidePanel({ room, folders, tab, setTab, onClose }) {
     window.addEventListener('mouseup', up);
   };
   return (
-    <aside class={`side-panel ${tab === 'browser' ? 'wide' : ''}`} style={width ? { width: `${width}px` } : undefined}>
+    <aside class={`side-panel ${tab === 'browser' || tab === 'terminal' ? 'wide' : ''}`} style={width ? { width: `${width}px` } : undefined}>
       <div class="panel-resize" onMouseDown={startResize} title="Потяните, чтобы изменить ширину" />
       <div class="side-head">
         <div class="tabs-row compact">
           {[
             ['changes', 'Изменения'],
             ['memory', 'Память'],
+            ['terminal', 'Терминал'],
             ['browser', 'Браузер'],
           ].map(([id, name]) => (
             <button key={id} class={`tab-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>
@@ -382,7 +534,15 @@ export function SidePanel({ room, folders, tab, setTab, onClose }) {
         </div>
       )}
       <div class="side-body">
-        {tab === 'changes' ? <GitPanel cwd={folder} key={folder} /> : tab === 'browser' ? <BrowserPanel /> : <MemoryPanel cwd={room.cwd} />}
+        {tab === 'changes' ? (
+          <GitPanel cwd={folder} key={folder} />
+        ) : tab === 'browser' ? (
+          <BrowserPanel />
+        ) : tab === 'terminal' ? (
+          <TerminalPanel cwd={room.workdir || room.cwd} />
+        ) : (
+          <MemoryPanel cwd={room.cwd} />
+        )}
       </div>
     </aside>
   );

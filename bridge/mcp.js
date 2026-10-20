@@ -71,6 +71,24 @@ if (AGENT === 'codex') {
   });
 }
 
+// Терминал боковой панели DuoCode: долгие процессы на виду у пользователя.
+tools.push(
+  {
+    name: 'terminal_start',
+    description:
+      "Start a long-running command (dev server, watch build, test watcher) in DuoCode's Terminal panel, in the project folder, where the user sees it live. " +
+      'Returns the process id and its first output (after `wait` seconds, default 3). For short commands use your normal shell.',
+    inputSchema: { type: 'object', properties: { command: { type: 'string' }, wait: { type: 'number', description: 'Seconds to wait before returning output (1-30).' } }, required: ['command'] },
+  },
+  {
+    name: 'terminal_read',
+    description: "Read DuoCode's Terminal panel: without id — list of processes (also ones the user started); with id — the last lines of its output.",
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, lines: { type: 'number' } } },
+  },
+  { name: 'terminal_write', description: 'Send a line of input to a running process in the Terminal panel.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] } },
+  { name: 'terminal_stop', description: 'Stop a process in the Terminal panel.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+);
+
 // Встроенный браузер DuoCode: пользователь видит его вживую во вкладке «Браузер» боковой панели.
 if (process.env.DUO_BROWSER === '1') {
   const obj = (properties = {}, required = []) => ({ type: 'object', properties, required });

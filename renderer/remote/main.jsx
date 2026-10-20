@@ -456,7 +456,7 @@ function App() {
       <div class="m-app">
         <Lightbox />
         {status === 'offline' && <div class="m-offline">Нет связи с компьютером — переподключаюсь…</div>}
-        {screen === 'home' && <Home rooms={rooms} limits={limits} projects={projects} onOpen={openRoom} onNew={() => setScreen('new')} />}
+        {screen === 'home' && <Home rooms={[...rooms.filter((r) => r.pinned && !r.archived), ...rooms.filter((r) => !r.pinned && !r.archived)]} limits={limits} projects={projects} onOpen={openRoom} onNew={() => setScreen('new')} />}
         {screen === 'new' && <NewChat onCreated={openRoom} />}
         {screen === 'room' && room && <Room room={room} key={room.id} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
       </div>

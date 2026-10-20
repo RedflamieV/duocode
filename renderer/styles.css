@@ -1559,3 +1559,66 @@ body.remote .user-actions { opacity: 1; }
 .edit-msg small { font-size: 12px; }
 .edit-revert { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); }
 .edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.archive-toggle { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 6px; padding: 6px 10px; border-radius: 8px; font-size: 12px; color: var(--faint); }
+.archive-toggle:hover { color: var(--text); background: var(--hover); }
+
+/* своя ветка чата */
+.branch-chip { color: var(--codex); }
+.branch-menu { width: 340px; }
+.branch-files { padding: 4px 10px 8px; font-size: 12.5px; color: var(--muted); }
+.branch-files ul { list-style: none; margin: 6px 0 0; padding: 0; max-height: 180px; overflow-y: auto; font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.branch-files li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.branch-files .st { display: inline-block; width: 14px; }
+.branch-files .st-A { color: var(--codex); }
+.branch-files .st-D { color: var(--danger); }
+.branch-files .st-M { color: var(--warn); }
+.branch-toggle { display: inline-flex; align-items: center; gap: 5px; margin-right: auto; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.menu button:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------- Терминал ---------- */
+.term-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.term-tabs { display: flex; gap: 4px; padding: 6px 8px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.term-tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 9px; border-radius: 7px; font-size: 12px; font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+.term-tab span { overflow: hidden; text-overflow: ellipsis; }
+.term-tab small { font-family: var(--font, inherit); color: var(--faint); }
+.term-tab.active { background: var(--panel-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.term-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.term-dot.on { background: var(--codex); animation: pulse 1.6s ease-in-out infinite; }
+.term-dot.err { background: var(--danger); }
+.term-out { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; font-family: var(--mono); font-size: 12px; line-height: 1.45; background: var(--bg); color: var(--text); white-space: pre-wrap; word-break: break-all; }
+.term-empty { color: var(--muted); font-family: inherit; white-space: normal; padding: 20px 8px; text-align: center; }
+.term-line .b { font-weight: 700; }
+.term-line .dim { opacity: 0.6; }
+.term-line .u { text-decoration: underline; }
+.term-line .fg-red { color: #e5534b; }
+.term-line .fg-green { color: #3fb68b; }
+.term-line .fg-yellow { color: #d4a72c; }
+.term-line .fg-blue { color: #539bf5; }
+.term-line .fg-magenta { color: #c678dd; }
+.term-line .fg-cyan { color: #39c5cf; }
+.term-line .fg-white { color: var(--text); }
+.term-line .fg-black { color: var(--faint); }
+.term-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--border); }
+.term-input { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; color: var(--faint); }
+.term-input input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; }
+.term-input.new { background: var(--panel); }
+
+/* бюджет чата */
+.small-modal { width: min(440px, 92vw); }
+.budget-spent { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 14px; font-size: 13px; }
+.budget-spent div { display: flex; align-items: center; gap: 6px; }
+.budget-chip { font-variant-numeric: tabular-nums; }
+.budget-chip.over { color: var(--danger); border-color: var(--danger); }
+.budget-input { width: 140px; }
+.composer-bar .send-btn, .composer-bar .stop-btn { margin-left: auto; }
+
+/* расписание */
+.sched-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+.sched-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); }
+.sched-item.off { opacity: 0.55; }
+.sched-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.sched-main small { color: var(--muted); font-size: 12px; }
+.sched-row { gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.week { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--panel-2); }
+.week .seg { padding: 4px 8px; min-width: 32px; }
+.time-input { width: 110px; height: 32px; }

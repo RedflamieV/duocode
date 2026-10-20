@@ -218,12 +218,25 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
     const t = setTimeout(() => duo.searchRooms(q).then(setFound), 200);
     return () => clearTimeout(t);
   }, [q]);
+  const [showArchive, setShowArchive] = useState(false);
+  const archivedCount = rooms.filter((r) => r.archived).length;
   const groups = useMemo(() => {
-    // группы: проекты (в порядке последней активности), затем проекты без чатов
+    // группы: закреплённые, проекты (в порядке последней активности), проекты без чатов, архив (по кнопке)
     const needle = q.toLowerCase();
     const byId = new Map(projects.map((p) => [p.id, p]));
     const map = new Map();
+    const pinned = { key: 'pinned', special: 'pin', name: 'Закреплённые', folders: [], rooms: [] };
+    const archive = { key: 'archive', special: 'archive', name: 'Архив', folders: [], rooms: [] };
+    map.set('pinned', pinned);
     for (const r of rooms) {
+      if (r.archived || r.pinned) {
+        const p = r.projectId && byId.get(r.projectId);
+        const name = p ? p.name : baseName(r.cwd);
+        if (needle && !r.title.toLowerCase().includes(needle) && !(name || '').toLowerCase().includes(needle)) continue;
+        if (r.archived) archive.rooms.push(r);
+        else pinned.rooms.push(r);
+        continue;
+      }
       const p = r.projectId && byId.get(r.projectId);
       const key = p ? p.id : `dir:${r.cwd || ''}`;
       const name = p ? p.name : baseName(r.cwd) || 'Без проекта';
@@ -232,8 +245,10 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
       map.get(key).rooms.push(r);
     }
     if (!needle) for (const p of projects) if (!map.has(p.id)) map.set(p.id, { key: p.id, project: p, name: p.name, folders: p.folders, rooms: [] });
+    if (!pinned.rooms.length) map.delete('pinned');
+    if ((showArchive || needle) && archive.rooms.length) map.set('archive', archive);
     return [...map.values()];
-  }, [rooms, projects, q]);
+  }, [rooms, projects, q, showArchive]);
 
   return (
     <aside class="sidebar">
@@ -272,7 +287,7 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
             <div class="group-title project-title" title={g.folders.join('\n')}>
               <button class="group-toggle" onClick={() => toggle(g.key)}>
                 <Icon name={collapsed[g.key] ? 'right' : 'down'} size={12} />
-                <Icon name="folder" size={13} />
+                <Icon name={g.special || 'folder'} size={13} />
                 <span class="group-name">{g.name}</span>
                 {g.folders.length > 1 && <span class="group-count">{g.folders.length}</span>}
               </button>
@@ -287,7 +302,7 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
                 </span>
               )}
             </div>
-            {!collapsed[g.key] && g.rooms.length === 0 && (
+            {!collapsed[g.key] && g.rooms.length === 0 && g.project && (
               <button class="room empty-room" onClick={() => onNewIn(g.project.id)}>
                 <Icon name="plus" size={13} /> Начать чат
               </button>
@@ -331,12 +346,33 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
             )}
           </div>
         ))}
+        {archivedCount > 0 && !q && (
+          <button class="archive-toggle" onClick={() => setShowArchive(!showArchive)}>
+            <Icon name="archive" size={13} /> {showArchive ? 'Скрыть архив' : `Архив · ${archivedCount}`}
+          </button>
+        )}
       </nav>
       {ctx && (
         <div class="menu context-menu" style={{ left: ctx.x, top: ctx.y, right: 'auto' }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { setRenaming(ctx.id); setCtx(null); }}>
             <Icon name="edit" size={14} /> Переименовать
           </button>
+          {(() => {
+            const r = rooms.find((x) => x.id === ctx.id);
+            if (!r) return null;
+            return (
+              <>
+                {!r.archived && (
+                  <button onClick={() => { duo.markRoom(r.id, { pinned: !r.pinned }); setCtx(null); }}>
+                    <Icon name="pin" size={14} /> {r.pinned ? 'Открепить' : 'Закрепить наверху'}
+                  </button>
+                )}
+                <button onClick={() => { duo.markRoom(r.id, { archived: !r.archived }); setCtx(null); }}>
+                  <Icon name="archive" size={14} /> {r.archived ? 'Вернуть из архива' : 'В архив'}
+                </button>
+              </>
+            );
+          })()}
           <button class="danger" onClick={() => { onDeleteRoom(ctx.id); setCtx(null); }}>
             <Icon name="trash" size={14} /> Удалить чат
           </button>
@@ -885,9 +921,135 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
   );
 }
 
+const errText = (err) => String((err && err.message) || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+const pct1 = (n) => `${Math.round((n || 0) * 10) / 10}%`;
+
+// Бюджет чата: сколько каждый агент может потратить здесь от своего недельного лимита.
+function BudgetModal({ room, onClose }) {
+  const [value, setValue] = useState(room.budget ? String(room.budget) : '');
+  const spent = room.spent || {};
+  const save = async (v) => {
+    await duo.setBudget(room.id, v);
+    onClose();
+  };
+  return (
+    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal small-modal">
+        <div class="modal-head">
+          <h2>Бюджет чата</h2>
+          <button class="icon-btn" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <p class="muted small">
+          Сколько недельного лимита каждый агент может потратить в этом чате. При 80% DuoCode предупредит, при 100% остановит агента и не будет отдавать ему новые задачи
+          этого чата. Считается приблизительно: по росту недельного лимита, пока агент работает здесь.
+        </p>
+        <div class="budget-spent">
+          {['claude', 'codex'].map((a) => (
+            <div key={a}>
+              <Avatar agent={a} size={16} /> {NAME[a]}: потрачено ≈<b>{pct1(spent[a])}</b>
+              {room.budget ? ` из ${pct1(room.budget)}` : ''}
+            </div>
+          ))}
+        </div>
+        <div class="field">
+          <label>Бюджет, % недельного лимита каждого агента</label>
+          <input class="text-input" type="number" min="0.5" max="100" step="0.5" value={value} placeholder="Без ограничения" onInput={(e) => setValue(e.target.value)} autoFocus />
+        </div>
+        <div class="modal-actions">
+          {room.budget && (
+            <button class="btn ghost" onClick={() => save(null)}>
+              Без ограничения
+            </button>
+          )}
+          <span class="spacer" />
+          <button class="btn primary" disabled={!(Number(value) > 0)} onClick={() => save(Number(value))}>
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Своя ветка чата: сколько изменено, перенести в проект, закончить ветку.
+function BranchChip({ room }) {
+  const [open, setOpen] = useState(false);
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef();
+  useEffect(() => {
+    if (!open) return;
+    duo.branch.status(room.id).then(setSt);
+    const close = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  const run = async (fn) => {
+    setBusy(true);
+    try {
+      await fn();
+      setOpen(false);
+    } catch (err) {
+      alert(errText(err));
+    }
+    setBusy(false);
+  };
+  const n = st ? st.files.length : null;
+  return (
+    <div class="menu-wrap" ref={ref}>
+      <button class={`project-chip branch-chip ${open ? 'open' : ''}`} onClick={() => setOpen(!open)} title="Чат работает в своей ветке — отдельной копии проекта">
+        <Icon name="branch" size={13} />
+        {room.branch.replace(/^duocode\//, '')}
+      </button>
+      {open && (
+        <div class="menu wide-menu branch-menu">
+          <div class="menu-section">Ветка {room.branch}</div>
+          <div class="branch-files">
+            {n === null ? 'Считаю изменения…' : n === 0 ? 'Изменений относительно проекта пока нет.' : `Изменено ${n} ${n === 1 ? 'файл' : n < 5 ? 'файла' : 'файлов'}:`}
+            {n > 0 && (
+              <ul>
+                {st.files.slice(0, 12).map((f) => (
+                  <li key={f.path}>
+                    <b class={`st st-${f.status[0]}`}>{f.status[0]}</b> {f.path}
+                  </li>
+                ))}
+                {n > 12 && <li class="muted">…и ещё {n - 12}</li>}
+              </ul>
+            )}
+          </div>
+          <button disabled={busy || !n} onClick={() => run(() => duo.branch.apply(room.id))}>
+            <Icon name="check" size={14} /> Перенести изменения в проект
+          </button>
+          <button onClick={() => { setOpen(false); duo.openProject(room.workdir); }}>
+            <Icon name="external" size={14} /> Открыть папку ветки
+          </button>
+          <div class="menu-sep" />
+          <button
+            class="danger"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                if (n && confirm(`Перенести ${n} изм. в проект перед закрытием ветки?\n\nОК — перенести и закрыть, Отмена — выбрать другое.`)) return duo.branch.end(room.id, { apply: true });
+                if (!confirm(n ? 'Закрыть ветку без переноса? Её изменения пропадут.' : 'Закрыть ветку? Чат продолжит работать в основной папке.')) return;
+                return duo.branch.end(room.id, { apply: false });
+              })
+            }
+          >
+            <Icon name="x" size={14} /> Закончить ветку…
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onEditProject }) {
   const [editing, setEditing] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [budgetOpen, setBudgetOpen] = useState(false);
   useEffect(() => setEditing(false), [room.id]);
   const s = room.settings;
   const set = (patch) => duo.setRoomSettings(room.id, patch);
@@ -919,6 +1081,17 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
           {project ? project.name : baseName(room.cwd)}
           {project && project.folders.length > 1 && <small> · {project.folders.length} папки</small>}
         </button>
+        {room.branch && <BranchChip room={room} />}
+        {room.budget && (
+          <button
+            class={`project-chip budget-chip ${['claude', 'codex'].some((a) => room.spent && room.spent[a] >= room.budget) ? 'over' : ''}`}
+            onClick={() => setBudgetOpen(true)}
+            title="Бюджет чата: сколько недельного лимита каждый агент может потратить здесь"
+          >
+            ≈{pct1(Math.max((room.spent && room.spent.claude) || 0, (room.spent && room.spent.codex) || 0))} / {pct1(room.budget)}
+          </button>
+        )}
+        {budgetOpen && <BudgetModal room={room} onClose={() => setBudgetOpen(false)} />}
       </div>
       <div class="room-controls no-drag">
         <Select value={s.mode} options={MODES} onChange={(v) => set({ mode: v })} title={mode.hint} />
@@ -970,6 +1143,24 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
               <button onClick={() => { setMenu(false); setEditing(true); }}>
                 <Icon name="edit" size={14} /> Переименовать
               </button>
+              <button onClick={() => { setMenu(false); setBudgetOpen(true); }}>
+                <Icon name="chart" size={14} /> Бюджет чата{room.budget ? ` · ${pct1(room.budget)}` : '…'}
+              </button>
+              {!room.branch && (
+                <button
+                  onClick={async () => {
+                    setMenu(false);
+                    try {
+                      await duo.branch.start(room.id);
+                    } catch (err) {
+                      alert(errText(err));
+                    }
+                  }}
+                  title="Агенты этого чата будут менять отдельную копию проекта на своей git-ветке"
+                >
+                  <Icon name="branch" size={14} /> Работать в своей ветке
+                </button>
+              )}
               <button onClick={() => { setMenu(false); duo.openProject(room.cwd); }}>
                 <Icon name="external" size={14} /> Открыть папку проекта
               </button>
@@ -997,6 +1188,8 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
     store('panel', p);
   };  // агент взялся за встроенный браузер — показываем его
   useEffect(() => duo.onBrowserShow((id) => id === room.id && setPanel('browser')), [room.id]);
+  // агент запустил процесс в терминале — показываем
+  useEffect(() => duo.onTerminalShow((id) => id === room.id && setPanel('terminal')), [room.id]);
 
   const [target, setTargetState] = useState(() => store(`target:${room.id}`) || 'both');
   const setTarget = (t) => {
@@ -1083,14 +1276,22 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
           setTarget={setTarget}
           autoFocus={room.id}
           commands={commands}
-          cwd={room.cwd}
+          cwd={room.workdir || room.cwd}
           roomId={room.id}
           pipelines={pipelines}
           focusTick={focusTick}
         />
       </div>
       </div>
-      {panel && <SidePanel room={room} folders={project ? [room.cwd, ...project.folders.filter((f) => f !== room.cwd)] : [room.cwd]} tab={panel} setTab={setPanel} onClose={() => setPanel('')} />}
+      {panel && (
+        <SidePanel
+          room={room}
+          folders={[room.workdir || room.cwd, ...(project ? project.folders.filter((f) => f !== room.cwd) : [])]}
+          tab={panel}
+          setTab={setPanel}
+          onClose={() => setPanel('')}
+        />
+      )}
       </div>
     </section>
   );
@@ -1257,6 +1458,7 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
     duo.codexModels().then((m) => setCodexModels(m || [])).catch(() => {});
   }, []);
   const setModel = (patch) => setModels((m) => ({ ...m, ...patch }));
+  const [ownBranch, setOwnBranch] = useState(false);
 
   useEffect(() => {
     duo.history().then(setHistory);
@@ -1270,7 +1472,10 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
 
   const send = async (text, agents, opts = {}) => {
     if (!current) return onEditProject({ name: '', folders: [] }, (p) => setProjectId(p.id));
-    const room = await duo.createRoom({ projectId: current.id, settings: models });
+    // название сразу из задачи — по нему же называется своя ветка чата
+    const title = text.trim().split('\n')[0].slice(0, 60) || undefined;
+    const room = await duo.createRoom({ projectId: current.id, settings: models, title: ownBranch ? title : undefined });
+    if (ownBranch) await duo.branch.start(room.id).catch((err) => alert(errText(err)));
     store(`target:${room.id}`, target);
     // сначала открываем чат, потом отправляем — долгий сценарий не должен держать на этом экране
     onCreated(room.id);
@@ -1333,6 +1538,10 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
           </div>
         )}
         <div class="new-models">
+          <label class="branch-toggle" title="Агенты этого чата будут менять отдельную копию проекта на своей git-ветке, а в основную папку изменения попадут, когда вы их перенесёте">
+            <input type="checkbox" checked={ownBranch} onChange={(e) => setOwnBranch(e.target.checked)} />
+            <Icon name="branch" size={13} /> Своя ветка
+          </label>
           <span class="muted">Модели:</span>
           <AgentChip
             agent="claude"
@@ -1592,6 +1801,23 @@ function AgentsTab({ settings, env, onSaved }) {
             {applied ? 'Применено ко всем чатам' : 'Применить эти настройки ко всем чатам'}
           </button>
         </div>
+      </div>
+      <div class="field">
+        <label>Бюджет новых чатов</label>
+        <div class="field-row">
+          <input
+            class="text-input budget-input"
+            type="number"
+            min="0"
+            max="100"
+            step="0.5"
+            value={nc.budget || ''}
+            placeholder="Без ограничения"
+            onChange={(e) => setNew({ budget: Number(e.target.value) > 0 ? Number(e.target.value) : null })}
+          />
+          <span class="muted small">% недельного лимита каждого агента</span>
+        </div>
+        <div class="field-hint">Сколько агент может потратить в одном чате: при 80% DuoCode предупредит, при 100% остановит. У открытого чата бюджет меняется в меню «⋯».</div>
       </div>
       <div class="field">
         <label>Язык ответов</label>
@@ -1876,6 +2102,153 @@ function PipelinesTab({ settings, onSaved }) {
   );
 }
 
+// ---------- Расписание ----------
+
+const WEEK = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+const TARGET_LABEL = { claude: 'Claude', codex: 'Codex', both: 'Claude и Codex', auto: 'Авто' };
+
+function describeSchedule(s) {
+  if (s.when === 'interval') {
+    const m = Number(s.every) || 60;
+    return m % 60 === 0 ? `каждые ${m / 60} ч` : `каждые ${m} мин`;
+  }
+  const days = s.days && s.days.length && s.days.length < 7 ? s.days : null;
+  const d = !days ? 'каждый день' : days.join(',') === '1,2,3,4,5' ? 'по будням' : days.map((x) => WEEK[x - 1]).join(', ');
+  return `${d} в ${s.time || '09:00'}`;
+}
+
+function ScheduleEditor({ item, projects, onClose }) {
+  const [s, setS] = useState({ name: '', projectId: (projects[0] && projects[0].id) || '', prompt: '', target: 'claude', when: 'days', time: '09:00', days: [1, 2, 3, 4, 5], every: 60, telegram: true, enabled: true, ...item });
+  const set = (patch) => setS((x) => ({ ...x, ...patch }));
+  const unit = s.every % 60 === 0 ? 'h' : 'm';
+  const save = async () => {
+    await duo.schedules.save({ ...s, name: s.name.trim() || s.prompt.trim().split('\n')[0].slice(0, 40) });
+    onClose();
+  };
+  return (
+    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal">
+        <div class="modal-head">
+          <h2>{item.id ? 'Задача по расписанию' : 'Новая задача по расписанию'}</h2>
+          <button class="icon-btn" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div class="field">
+          <label>Что сделать</label>
+          <textarea class="instr-text" rows={4} value={s.prompt} onInput={(e) => set({ prompt: e.target.value })} placeholder={'Например: прогони тесты и коротко напиши, что упало и почему'} autoFocus />
+        </div>
+        <div class="field">
+          <label>Название</label>
+          <input class="text-input" value={s.name} onInput={(e) => set({ name: e.target.value })} placeholder="Например, Утренние тесты" />
+        </div>
+        <div class="field">
+          <label>Проект</label>
+          <Select value={s.projectId} options={projects.map((p) => ({ id: p.id, name: p.name }))} onChange={(v) => set({ projectId: v })} />
+        </div>
+        <div class="field">
+          <label>Кто делает</label>
+          <Segmented value={s.target} onChange={(v) => set({ target: v })} options={['claude', 'codex', 'both', 'auto'].map((id) => ({ id, name: TARGET_LABEL[id] }))} />
+        </div>
+        <div class="field">
+          <label>Когда</label>
+          <Segmented value={s.when} onChange={(v) => set({ when: v })} options={[{ id: 'days', name: 'По дням' }, { id: 'interval', name: 'С интервалом' }]} />
+          {s.when === 'days' ? (
+            <div class="field-row sched-row">
+              <div class="week">
+                {WEEK.map((d, i) => (
+                  <button
+                    key={d}
+                    class={`seg ${s.days.includes(i + 1) ? 'active' : ''}`}
+                    onClick={() => set({ days: s.days.includes(i + 1) ? s.days.filter((x) => x !== i + 1) : [...s.days, i + 1].sort() })}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+              <span class="muted small">в</span>
+              <input class="text-input time-input" type="time" value={s.time} onInput={(e) => set({ time: e.target.value })} />
+            </div>
+          ) : (
+            <div class="field-row sched-row">
+              <span class="muted small">каждые</span>
+              <input
+                class="text-input time-input"
+                type="number"
+                min="1"
+                value={unit === 'h' ? s.every / 60 : s.every}
+                onInput={(e) => set({ every: Math.max(5, (Number(e.target.value) || 1) * (unit === 'h' ? 60 : 1)) })}
+              />
+              <Select value={unit} options={[{ id: 'm', name: 'минут' }, { id: 'h', name: 'часов' }]} onChange={(v) => set({ every: v === 'h' ? Math.max(60, Math.round(s.every / 60) * 60) : Math.max(5, s.every) })} />
+            </div>
+          )}
+        </div>
+        <Switch checked={s.telegram} onChange={(v) => set({ telegram: v })} label="Присылать итог в Telegram" hint="Даже если уведомления о завершении в Telegram выключены" />
+        <div class="field-hint">Задача работает, пока DuoCode запущен (можно свёрнутым в трей). Все запуски копятся в одном чате «⏰ …» этого проекта.</div>
+        <div class="modal-actions">
+          <span class="spacer" />
+          <button class="btn ghost" onClick={onClose}>
+            Отмена
+          </button>
+          <button class="btn primary" disabled={!s.prompt.trim() || !s.projectId || (s.when === 'days' && !s.days.length)} onClick={save}>
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SchedulesTab({ settings }) {
+  const list = settings.schedules || [];
+  const projects = settings.workspaces || [];
+  const [editing, setEditing] = useState(null);
+  const [ran, setRan] = useState(null);
+  return (
+    <div class="tab-body">
+      <p class="field-hint">
+        Агенты сами выполняют задачу в нужное время: «каждое утро прогоняй тесты», «раз в час проверяй, не упал ли сайт». Итог — в чате, уведомлением и в Telegram.
+      </p>
+      {list.length === 0 && <div class="muted small pad">Задач пока нет.</div>}
+      <div class="sched-list">
+        {list.map((s) => {
+          const p = projects.find((x) => x.id === s.projectId);
+          return (
+            <div class={`sched-item ${s.enabled ? '' : 'off'}`} key={s.id}>
+              <input type="checkbox" class="sched-toggle" checked={s.enabled} title={s.enabled ? 'Выключить' : 'Включить'} onChange={(e) => duo.schedules.save({ ...s, enabled: e.target.checked })} />
+              <div class="sched-main" onClick={() => setEditing(s)}>
+                <b>{s.name || 'Без названия'}</b>
+                <small>
+                  {describeSchedule(s)} · {TARGET_LABEL[s.target] || s.target} · {p ? p.name : 'проект удалён'}
+                  {s.lastRun ? ` · последний запуск ${new Date(s.lastRun).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}
+                </small>
+              </div>
+              <button
+                class="btn small"
+                onClick={async () => {
+                  await duo.schedules.run(s.id);
+                  setRan(s.id);
+                  setTimeout(() => setRan(null), 2000);
+                }}
+                title="Запустить сейчас"
+              >
+                {ran === s.id ? 'Запущено' : <Icon name="play" size={12} />}
+              </button>
+              <button class="icon-btn tiny" title="Удалить" onClick={() => confirm(`Удалить задачу «${s.name}»?`) && duo.schedules.remove(s.id)}>
+                <Icon name="trash" size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <button class="btn" disabled={!projects.length} onClick={() => setEditing({})}>
+        <Icon name="plus" size={14} /> Новая задача
+      </button>
+      {editing && <ScheduleEditor item={editing} projects={projects} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
 function GeneralTab({ settings, onSaved }) {
   const g = settings.general || {};
   const set = (patch) => duo.setSettings({ general: patch }).then(onSaved);
@@ -1884,6 +2257,12 @@ function GeneralTab({ settings, onSaved }) {
     <div class="tab-body">
       <Switch checked={!!g.closeToTray} onChange={(v) => set({ closeToTray: v })} label="Сворачивать в трей при закрытии окна" hint="Агенты продолжают работать в фоне. Выйти — через значок в трее" />
       <Switch checked={g.hotkey !== false} onChange={(v) => set({ hotkey: v })} label={`Горячая клавиша ${key}`} hint="Показывает DuoCode из любого приложения и ставит курсор в поле ввода" />
+      <Switch
+        checked={g.desktopNotify !== false}
+        onChange={(v) => set({ desktopNotify: v })}
+        label="Уведомления на рабочем столе"
+        hint="Когда окно DuoCode не активно: агент закончил или упал с ошибкой, ждёт подтверждения или задаёт вопрос. Нажмите на уведомление — откроется нужный чат"
+      />
       <Switch checked={g.notifyLimits !== false} onChange={(v) => set({ notifyLimits: v })} label="Уведомления о лимитах" hint="Почти исчерпан, кончится раньше сброса, снова доступен" />
       <Switch
         checked={g.browser !== false}
@@ -1956,6 +2335,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
             ['look', 'Внешний вид'],
             ['agents', 'Агенты'],
             ['pipelines', 'Сценарии'],
+            ['schedules', 'Расписание'],
             ['telegram', 'Telegram'],
             ['general', 'Общие'],
             ['about', 'О программе'],
@@ -1970,6 +2350,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
         {tab === 'pipelines' && <PipelinesTab settings={settings} onSaved={onSaved} />}
         {tab === 'telegram' && <TelegramTab settings={settings} onSaved={onSaved} />}
         {tab === 'general' && <GeneralTab settings={settings} onSaved={onSaved} />}
+        {tab === 'schedules' && <SchedulesTab settings={settings} />}
         {tab === 'about' && <AboutTab update={update} onUpdate={onUpdate} />}
       </div>
     </div>
@@ -2081,7 +2462,7 @@ function App() {
 
   const removeRoom = async (id = room && room.id) => {
     const r = rooms.find((x) => x.id === id);
-    if (!r || !confirm(`Удалить чат «${r.title}»? Сессии Claude и Codex останутся в их истории.`)) return;
+    if (!r || !confirm(`Удалить чат «${r.title}»? Сессии Claude и Codex останутся в их истории.${r.branch ? `\n\nСвоя ветка чата «${r.branch}» и её не перенесённые изменения будут удалены.` : ''}`)) return;
     await duo.removeRoom(id);
     if (id === currentId) open(null);
   };

@@ -102,7 +102,7 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   // дополнительные настройки Claude Code (например, язык ответов) — добавляются к настройкам пользователя
   if (settingsPath) args.push('--settings', settingsPath);
   // свои инструменты DuoCode не требуют подтверждения: браузер изолирован и виден пользователю
-  args.push('--allowedTools', 'mcp__duo__ask_codex', 'mcp__duo__remember', ...['open', 'read', 'click', 'type', 'scroll', 'screenshot', 'back'].map((t) => `mcp__duo__browser_${t}`));
+  args.push('--allowedTools', 'mcp__duo__ask_codex', 'mcp__duo__remember', ...['open', 'read', 'click', 'type', 'scroll', 'screenshot', 'back'].map((t) => `mcp__duo__browser_${t}`), ...['start', 'read', 'write', 'stop'].map((t) => `mcp__duo__terminal_${t}`), 'mcp__duo__ask_user');
   // в режиме плана Claude сам вызывает ExitPlanMode, а DuoCode показывает план на утверждение
   if (plan) args.push('--permission-mode', 'plan', '--permission-prompt-tool', 'mcp__duo__approve');
   else if (mode === 'full') args.push('--permission-mode', 'bypassPermissions');

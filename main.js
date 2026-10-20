@@ -17,6 +17,7 @@ const { searchFiles } = require('./src/files');
 const projects = require('./src/projects');
 const memory = require('./src/memory');
 const { AgentBrowser } = require('./src/browser');
+const { Terminals } = require('./src/terminal');
 const { Telegram, esc, clip } = require('./src/telegram');
 const { toTelegram, quote, plain } = require('./src/tgformat');
 const { RemoteServer, Tunnel } = require('./src/remote');
@@ -41,7 +42,9 @@ const APPEARANCE = {
   showCost: true,
 };
 const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true, remote: false, tunnel: 'cloudflare', customUrl: '', activeRoom: '', target: 'both' };
-const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true, browser: true };
+const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true, browser: true, desktopNotify: true };
+// Windows показывает уведомления приложения только с его идентификатором (тот же, что в установщике)
+if (process.platform === 'win32') app.setAppUserModelId('local.duocode');
 
 const PIPELINES = [
   {
@@ -205,6 +208,7 @@ function startBridge(rooms) {
 let win;
 let rooms;
 let browser = null;
+const terminals = new Terminals();
 let codex;
 let tray = null;
 const tg = new Telegram();
@@ -268,7 +272,73 @@ function limitNotify(title, body) {
   if (settings.telegram.notifyLimits) tg.send(`⚠️ <b>${esc(title)}</b>\n${esc(body)}`);
 }
 
+// ---------- Задачи по расписанию ----------
+// { id, name, projectId, prompt, target: claude|codex|both|auto, when: days|interval, time: 'HH:MM', days: [1..7] (1 — пн),
+//   every: минуты, enabled, telegram, lastRun, roomId }
+
+const scheduleList = () => settings.schedules || [];
+
+// Когда задача должна была запуститься последний раз (для «по дням») — чтобы догнать пропущенный сегодня запуск.
+function lastDue(s, now = new Date()) {
+  if (s.when === 'interval') return (s.lastRun || s.since || 0) + Math.max(5, Number(s.every) || 60) * 60000;
+  const [h, m] = String(s.time || '09:00').split(':').map(Number);
+  const due = new Date(now);
+  due.setHours(h || 0, m || 0, 0, 0);
+  const wd = ((now.getDay() + 6) % 7) + 1; // 1 — понедельник
+  if (!(s.days && s.days.length ? s.days : [1, 2, 3, 4, 5, 6, 7]).includes(wd)) return Infinity;
+  return due.getTime();
+}
+
+function scheduleDue(s, now = Date.now()) {
+  if (!s.enabled || !s.prompt || !projects.get(settings, s.projectId)) return false;
+  const due = lastDue(s, new Date(now));
+  if (s.when === 'interval') return now >= due;
+  return now >= due && (s.lastRun || s.since || 0) < due;
+}
+
+function runSchedule(s) {
+  if (!projects.get(settings, s.projectId)) return null;
+  let room = s.roomId && rooms.get(s.roomId);
+  if (!room || room.archived) {
+    room = createRoom({ projectId: s.projectId, title: `⏰ ${s.name || 'Задача по расписанию'}` });
+    s.roomId = room.id;
+  }
+  s.lastRun = Date.now();
+  saveSettings();
+  if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
+  // прошлый запуск ещё идёт — не наслаиваем
+  if (room.running && (room.running.claude || room.running.codex)) return room.id;
+  if (s.telegram) scheduledRooms.add(room.id);
+  const targets = s.target === 'both' ? ['claude', 'codex'] : [s.target || 'claude'];
+  rooms.send(room.id, { text: s.prompt, targets });
+  return room.id;
+}
+
+function startScheduler() {
+  setInterval(() => {
+    for (const s of scheduleList()) {
+      try {
+        if (scheduleDue(s)) runSchedule(s);
+      } catch {}
+    }
+  }, 30000);
+}
+
+// Бюджет чатов: прирост недельного лимита записываем на чаты, где агент сейчас работает.
+const lastWeekly = {};
+function trackSpend(agent) {
+  const d = limits[agent];
+  const w = d && d.ok && d.windows && d.windows.find((x) => x.label === 'Неделя');
+  if (!w || typeof w.percent !== 'number') return;
+  const last = lastWeekly[agent];
+  lastWeekly[agent] = w.percent;
+  const delta = last == null ? 0 : w.percent - last;
+  if (rooms && delta > 0 && delta < 25) rooms.addSpent(agent, delta);
+}
+
 function sendLimits() {
+  trackSpend('claude');
+  trackSpend('codex');
   addForecast(limits.claude);
   addForecast(limits.codex);
   limitAlerts('claude', limits.claude);
@@ -554,6 +624,7 @@ function setupTelegram() {
 
 const TARGET_NAME = { claude: 'Claude', codex: 'Codex', both: 'Claude и Codex', auto: 'Авто (у кого больше лимита)' };
 const followed = new Map(); // roomId -> время, до которого показываем ход работы в Telegram
+const scheduledRooms = new Set(); // чаты задач по расписанию: итог — в Telegram, даже если уведомления о завершении выключены
 const progress = new Map(); // id сообщения агента -> { tgId, text, at, timer }
 
 function setBot(patch) {
@@ -594,7 +665,8 @@ async function botCommand({ name, args }) {
     case 'help':
       return tg.say(HELP + (room ? `\n\nСейчас выбран чат «${esc(room.title)}».` : '\n\nНачните с /chats или /new.'));
     case 'chats': {
-      const list = rooms.list().slice(0, 10);
+      const all = rooms.list().filter((r) => !r.archived);
+      const list = [...all.filter((r) => r.pinned), ...all.filter((r) => !r.pinned)].slice(0, 10);
       if (!list.length) return tg.say('Чатов пока нет. Создайте: /new');
       return tg.say(
         '<b>Выберите чат</b>',
@@ -826,7 +898,7 @@ function telegramAttention(room, msg, part) {
 function telegramFinished(room, msg) {
   if (msg.parentId || msg.duelId) return;
   const isFollowed = (followed.get(room.id) || 0) > Date.now();
-  if (!settings.telegram.notifyFinish && !isFollowed) return;
+  if (!settings.telegram.notifyFinish && !isFollowed && !scheduledRooms.has(room.id)) return;
   const who = msg.agent === 'claude' ? 'Claude' : 'Codex';
   const icon = msg.status === 'error' ? '⚠️' : msg.status === 'stopped' ? '⏹' : '✅';
   const body = msg.error ? esc(`Ошибка: ${msg.error}`) : toTelegram(clip(msg.finalText || '', isFollowed ? 3500 : 1500));
@@ -991,8 +1063,9 @@ function createWindow() {
   });
 }
 
+// Системное уведомление, когда окно DuoCode не перед глазами (свёрнуто, в трее или в другом приложении).
 function notify(title, body, roomId) {
-  if (!win || win.isFocused() || !Notification.isSupported()) return;
+  if (!win || win.isFocused() || !Notification.isSupported() || settings.general.desktopNotify === false) return;
   const n = new Notification({ title, body });
   n.on('click', () => {
     win.show();
@@ -1015,6 +1088,40 @@ function bindIpc() {
   });
   ipcMain.handle('rooms:rename', (_e, id, title) => rooms.rename(id, title));
   ipcMain.handle('rooms:resend', (_e, id, msgId) => rooms.resend(id, msgId));
+  ipcMain.handle('rooms:mark', (_e, id, patch) => rooms.mark(id, patch));
+  ipcMain.handle('rooms:budget', (_e, id, budget) => rooms.setBudget(id, budget));
+  ipcMain.handle('schedules:save', (_e, s) => {
+    const list = scheduleList();
+    const item = { enabled: true, telegram: true, when: 'days', time: '09:00', days: [1, 2, 3, 4, 5], every: 60, target: 'claude', ...s };
+    if (!item.id) item.id = 'sch-' + crypto.randomBytes(4).toString('hex');
+    // новую задачу отсчитываем от момента создания: интервальную не запускаем сразу,
+    // ежедневную, созданную после её времени сегодня, не запускаем «вдогонку» в тот же день
+    if (!item.since) item.since = Date.now();
+    const i = list.findIndex((x) => x.id === item.id);
+    settings.schedules = i >= 0 ? list.map((x, j) => (j === i ? { ...x, ...item } : x)) : [...list, item];
+    saveSettings();
+    win.webContents.send('settings', settings);
+    return item;
+  });
+  ipcMain.handle('schedules:remove', (_e, id) => {
+    settings.schedules = scheduleList().filter((x) => x.id !== id);
+    saveSettings();
+    win.webContents.send('settings', settings);
+  });
+  ipcMain.handle('schedules:run', (_e, id) => {
+    const s = scheduleList().find((x) => x.id === id);
+    return s ? runSchedule(s) : null;
+  });
+  ipcMain.handle('term:list', () => terminals.list());
+  ipcMain.handle('term:output', (_e, id) => terminals.output(id));
+  ipcMain.handle('term:start', (_e, command, cwd) => terminals.start({ command, cwd, by: 'user' }));
+  ipcMain.handle('term:write', (_e, id, text) => terminals.write(id, text));
+  ipcMain.handle('term:stop', (_e, id) => terminals.stop(id));
+  ipcMain.handle('term:remove', (_e, id) => terminals.remove(id));
+  ipcMain.handle('branch:start', (_e, id) => rooms.startBranch(id));
+  ipcMain.handle('branch:status', (_e, id) => rooms.branchStatus(id));
+  ipcMain.handle('branch:apply', (_e, id) => rooms.applyBranch(id));
+  ipcMain.handle('branch:end', (_e, id, opts) => rooms.endBranch(id, opts));
   ipcMain.handle('rooms:edit', (_e, id, msgId, text, opts) => rooms.editMessage(id, msgId, text, opts));
   ipcMain.handle('rooms:settings', (_e, id, patch) => rooms.updateSettings(id, patch));
   ipcMain.handle('rooms:remove', (_e, id) => rooms.remove(id));
@@ -1220,8 +1327,11 @@ app.whenReady().then(async () => {
   browser = new AgentBrowser({ getWindow: () => win, shotDir: path.join(userData, 'browser') });
   browser.on('state', (st) => win && !win.isDestroyed() && win.webContents.send('browser', st));
   browser.on('show', (roomId) => win && !win.isDestroyed() && win.webContents.send('browser-show', roomId));
+  terminals.on('list', (list) => win && !win.isDestroyed() && win.webContents.send('term-list', list));
+  terminals.on('data', (id, data) => win && !win.isDestroyed() && win.webContents.send('term-data', id, data));
   rooms = new Rooms({
     browser,
+    terminals,
     store: new Store(path.join(userData, 'rooms')),
     runDir: path.join(userData, 'run'),
     bridge,
@@ -1231,6 +1341,8 @@ app.whenReady().then(async () => {
     worktreeDir: path.join(userData, 'worktrees'),
     pickAgent,
   });
+
+  startScheduler();
 
   // Ходы, упавшие из-за пропавшего интернета: раз в 15 секунд проверяем связь и, когда она вернулась, продолжаем.
   setInterval(async () => {
@@ -1260,6 +1372,11 @@ app.whenReady().then(async () => {
     telegramAttention(room, msg, part);
   });
   rooms.on('messages', (roomId, msgs) => trackProgress(roomId, msgs));
+  rooms.on('terminal-show', (id) => win && !win.isDestroyed() && win.webContents.send('terminal-show', id));
+  rooms.on('budget', (room, agent, spent) => {
+    notify(`${agent === 'claude' ? 'Claude' : 'Codex'}: бюджет чата исчерпан`, `${room.title}: ≈${Math.round(spent * 10) / 10}% недельного лимита`, room.id);
+    if (settings.telegram.token && settings.telegram.userId) tg.send(`💸 <b>${agent === 'claude' ? 'Claude' : 'Codex'}</b> · ${esc(room.title)}\nБюджет чата исчерпан (≈${Math.round(spent * 10) / 10}% недельного лимита), агент остановлен.`, { roomId: room.id });
+  });
   rooms.on('reset', (id) => {
     if (win && !win.isDestroyed()) win.webContents.send('room-reset', id);
     if (remote) remote.broadcast('reset', { roomId: id });
@@ -1267,7 +1384,10 @@ app.whenReady().then(async () => {
   rooms.on('memory', (cwd) => win && !win.isDestroyed() && win.webContents.send('memory', cwd));
   rooms.on('finished', (room, msg) => {
     if (msg.parentId) return;
-    notify(`${msg.agent === 'claude' ? 'Claude' : 'Codex'} закончил`, room.title, room.id);
+    const who = msg.agent === 'claude' ? 'Claude' : 'Codex';
+    const text = (msg.error || msg.finalText || '').replace(/[#*_`>]+/g, '').replace(/\s+/g, ' ').trim();
+    if (msg.status === 'error') notify(`${who}: ошибка · ${room.title}`, text.slice(0, 160), room.id);
+    else if (msg.status === 'done') notify(`${who} закончил · ${room.title}`, text.slice(0, 160) || 'Готово', room.id);
     telegramFinished(room, msg);
     refreshToday();
   });
@@ -1303,6 +1423,7 @@ app.on('before-quit', () => {
   app.isQuitting = true;
   if (tunnel) tunnel.stop();
   if (rooms) rooms.shutdown();
+  terminals.stopAll();
   if (codex) codex.stop();
 });
 

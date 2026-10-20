@@ -261,6 +261,17 @@ async function applyPatch(cwd, patchFile) {
   return { ok: r.code === 0, output: r.stderr.trim() };
 }
 
+// Копия проекта на своей ветке — для чата, который работает отдельно от основной папки.
+async function addBranchWorktree(cwd, dir, branch, commit) {
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const r = await git(['worktree', 'add', '-b', branch, dir, commit], { cwd });
+  return { ok: r.code === 0, output: r.stderr.trim() };
+}
+
+async function deleteBranch(cwd, branch) {
+  await git(['branch', '-D', branch], { cwd });
+}
+
 async function removeWorktree(cwd, dir) {
   await git(['worktree', 'remove', '--force', dir], { cwd });
   await git(['worktree', 'prune'], { cwd });
@@ -268,6 +279,8 @@ async function removeWorktree(cwd, dir) {
 }
 
 module.exports = {
+  addBranchWorktree,
+  deleteBranch,
   git,
   hasGit,
   isRepo,
