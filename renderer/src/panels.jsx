@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'preact/hooks';
+import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import { Icon, Avatar } from './icons.jsx';
 
 const duo = window.duo;
@@ -223,16 +223,145 @@ function MemoryPanel({ cwd }) {
   );
 }
 
+// Встроенный браузер агентов. Сама страница — окно Electron (WebContentsView) поверх этого места:
+// панель сообщает его координаты и прячет браузер, пока поверх открыто меню или окно.
+const NAME_OF = { claude: 'Claude', codex: 'Codex' };
+function BrowserPanel() {
+  const [st, setSt] = useState({ url: '' });
+  const [addr, setAddr] = useState('');
+  const [editing, setEditing] = useState(false);
+  const box = useRef();
+  useEffect(() => {
+    duo.browserState().then((s) => s && setSt(s));
+    return duo.onBrowser(setSt);
+  }, []);
+  useEffect(() => {
+    if (!editing) setAddr(st.url || '');
+  }, [st.url, editing]);
+  const show = !!(st.url || st.driver);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    let last = '';
+    const sync = () => {
+      const covered = document.querySelector('.modal-back, .lightbox, .menu, .context-menu');
+      const r = el.getBoundingClientRect();
+      const rect = show && !covered && r.width > 20 ? { x: r.left, y: r.top, width: r.width, height: r.height } : null;
+      const key = JSON.stringify(rect);
+      if (key !== last) {
+        last = key;
+        duo.browserBounds(rect);
+      }
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    const mo = new MutationObserver(sync);
+    mo.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', sync);
+    // пока панель выезжает, координаты меняются без изменения размеров
+    const t = setInterval(sync, 120);
+    const stop = setTimeout(() => clearInterval(t), 800);
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      window.removeEventListener('resize', sync);
+      clearInterval(t);
+      clearTimeout(stop);
+      duo.browserBounds(null);
+    };
+  }, [show]);
+  const go = (e) => {
+    e.preventDefault();
+    setEditing(false);
+    if (addr.trim()) duo.browserUser('open', addr.trim()).catch(() => {});
+  };
+  return (
+    <div class="browser-panel">
+      <form class="browser-bar" onSubmit={go}>
+        <button type="button" class="icon-btn tiny" disabled={!st.canBack} onClick={() => duo.browserUser('back')} title="Назад">
+          <Icon name="left" size={15} />
+        </button>
+        <button type="button" class="icon-btn tiny" disabled={!st.canForward} onClick={() => duo.browserUser('forward')} title="Вперёд">
+          <Icon name="right" size={15} />
+        </button>
+        <button type="button" class="icon-btn tiny" disabled={!st.url} onClick={() => duo.browserUser(st.loading ? 'stop' : 'reload')} title={st.loading ? 'Остановить' : 'Обновить'}>
+          <Icon name={st.loading ? 'x' : 'refresh'} size={14} />
+        </button>
+        <input
+          class="browser-url"
+          value={addr}
+          placeholder="Адрес, например localhost:3000"
+          spellcheck={false}
+          onFocus={(e) => {
+            setEditing(true);
+            e.target.select();
+          }}
+          onBlur={() => setEditing(false)}
+          onInput={(e) => setAddr(e.target.value)}
+        />
+        <button type="button" class="icon-btn tiny" disabled={!st.url} onClick={() => duo.browserExternal()} title="Открыть в системном браузере">
+          <Icon name="external" size={14} />
+        </button>
+      </form>
+      {st.driver && (
+        <div class={`browser-driver ${st.driver}`}>
+          <i />
+          {NAME_OF[st.driver]} управляет браузером
+        </div>
+      )}
+      {st.loading && <div class="browser-progress" />}
+      <div class="browser-view" ref={box}>
+        {!show && (
+          <div class="browser-empty">
+            <Icon name="globe" size={28} />
+            <b>Браузер агентов</b>
+            <p>
+              Здесь Claude и Codex открывают страницы, кликают и прокручивают — вы видите это вживую. Попросите, например: «открой localhost:3000 и проверь форму входа». Или введите
+              адрес сверху.
+            </p>
+            <small>Отдельный браузер: ваших входов на сайты и паролей в нём нет.</small>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function SidePanel({ room, folders, tab, setTab, onClose }) {
   const [folder, setFolder] = useState(room.cwd);
   useEffect(() => setFolder(room.cwd), [room.id]);
+  // ширину панели можно менять, потянув за левый край
+  const [width, setWidth] = useState(() => Number(localStorage.getItem('duo:panel-width')) || 0);
+  const startResize = (e) => {
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = e.currentTarget.parentNode.getBoundingClientRect().width;
+    const move = (ev) => setWidth(Math.max(320, Math.min(window.innerWidth - 520, w0 + (x0 - ev.clientX))));
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      document.body.classList.remove('resizing');
+      setWidth((w) => {
+        try {
+          localStorage.setItem('duo:panel-width', String(w));
+        } catch {}
+        return w;
+      });
+    };
+    document.body.classList.add('resizing');
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
   return (
-    <aside class="side-panel">
+    <aside class={`side-panel ${tab === 'browser' ? 'wide' : ''}`} style={width ? { width: `${width}px` } : undefined}>
+      <div class="panel-resize" onMouseDown={startResize} title="Потяните, чтобы изменить ширину" />
       <div class="side-head">
         <div class="tabs-row compact">
           {[
             ['changes', 'Изменения'],
             ['memory', 'Память'],
+            ['browser', 'Браузер'],
           ].map(([id, name]) => (
             <button key={id} class={`tab-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>
               {name}
@@ -252,7 +381,9 @@ export function SidePanel({ room, folders, tab, setTab, onClose }) {
           ))}
         </div>
       )}
-      <div class="side-body">{tab === 'changes' ? <GitPanel cwd={folder} key={folder} /> : <MemoryPanel cwd={room.cwd} />}</div>
+      <div class="side-body">
+        {tab === 'changes' ? <GitPanel cwd={folder} key={folder} /> : tab === 'browser' ? <BrowserPanel /> : <MemoryPanel cwd={room.cwd} />}
+      </div>
     </aside>
   );
 }

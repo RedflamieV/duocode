@@ -1,6 +1,8 @@
 // Иконки в стиле lucide (обводка 1.75).
 const PATHS = {
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  left: '<path d="m15 18-6-6 6-6"/>',
+  globe: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><circle cx="6.5" cy="6.5" r=".5"/><circle cx="9" cy="6.5" r=".5"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',

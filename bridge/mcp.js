@@ -48,6 +48,38 @@ tools.push({
   },
 });
 
+// Встроенный браузер DuoCode: пользователь видит его вживую во вкладке «Браузер» боковой панели.
+if (process.env.DUO_BROWSER === '1') {
+  const obj = (properties = {}, required = []) => ({ type: 'object', properties, required });
+  tools.push(
+    {
+      name: 'browser_open',
+      description:
+        "Open a URL in DuoCode's built-in browser, which the user watches live in the app's side panel. Use it to check web pages and the app " +
+        'you are building (for example http://localhost:3000). Returns the page text and numbered interactive elements.',
+      inputSchema: obj({ url: { type: 'string', description: 'http(s) address; "localhost:3000" works too.' } }, ['url']),
+    },
+    { name: 'browser_read', description: 'Read the current page of the built-in browser: title, URL, scroll position, numbered interactive elements and visible text.', inputSchema: obj() },
+    {
+      name: 'browser_click',
+      description: 'Click in the built-in browser: an element by its number from browser_open/browser_read (preferred), or a point x, y in CSS pixels of the viewport.',
+      inputSchema: obj({ index: { type: 'number' }, x: { type: 'number' }, y: { type: 'number' } }),
+    },
+    {
+      name: 'browser_type',
+      description: 'Type text in the built-in browser. Optionally click the element with this number first, then press Enter (submit) or another key (Tab, Escape, Backspace, Up, Down, PageDown).',
+      inputSchema: obj({ text: { type: 'string' }, index: { type: 'number' }, submit: { type: 'boolean' }, key: { type: 'string' } }),
+    },
+    {
+      name: 'browser_scroll',
+      description: 'Scroll the page in the built-in browser.',
+      inputSchema: obj({ direction: { type: 'string', enum: ['down', 'up'] }, amount: { type: 'number', description: 'Pixels, default 600.' } }),
+    },
+    { name: 'browser_screenshot', description: 'Take a screenshot of the visible part of the page in the built-in browser. The image is also shown to the user in the chat.', inputSchema: obj() },
+    { name: 'browser_back', description: 'Go back in the built-in browser history.', inputSchema: obj() },
+  );
+}
+
 if (AGENT === 'claude') {
   tools.push({
     name: 'approve',
@@ -103,7 +135,10 @@ rl.on('line', async (line) => {
     send({ jsonrpc: '2.0', id, result: { tools } });
   } else if (method === 'tools/call') {
     const res = await callApp(params.name, params.arguments || {});
-    send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: res.text || '' }], isError: !!res.isError } });
+    const content = [];
+    if (res.image) content.push({ type: 'image', data: res.image.data, mimeType: res.image.mimeType });
+    if (res.text || !content.length) content.push({ type: 'text', text: res.text || '' });
+    send({ jsonrpc: '2.0', id, result: { content, isError: !!res.isError } });
   } else if (method === 'ping') {
     send({ jsonrpc: '2.0', id, result: {} });
   } else {

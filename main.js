@@ -16,6 +16,7 @@ const gitx = require('./src/git');
 const { searchFiles } = require('./src/files');
 const projects = require('./src/projects');
 const memory = require('./src/memory');
+const { AgentBrowser } = require('./src/browser');
 const { Telegram, esc, clip } = require('./src/telegram');
 const { toTelegram, quote, plain } = require('./src/tgformat');
 const { RemoteServer, Tunnel } = require('./src/remote');
@@ -40,7 +41,7 @@ const APPEARANCE = {
   showCost: true,
 };
 const TELEGRAM = { token: '', userId: '', notifyFinish: true, notifyApprovals: true, notifyLimits: true, remote: false, tunnel: 'cloudflare', customUrl: '', activeRoom: '', target: 'both' };
-const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true };
+const GENERAL = { closeToTray: false, hotkey: true, notifyLimits: true, browser: true };
 
 const PIPELINES = [
   {
@@ -203,6 +204,7 @@ function startBridge(rooms) {
 
 let win;
 let rooms;
+let browser = null;
 let codex;
 let tray = null;
 const tg = new Telegram();
@@ -850,6 +852,7 @@ function remoteImage(p) {
     ...rooms.list().map((r) => r.cwd),
     path.join(userData, 'attachments'),
     path.join(userData, 'worktrees'),
+    path.join(userData, 'browser'),
   ];
   const norm = (x) => (process.platform === 'win32' ? x.toLowerCase() : x);
   return roots.some((root) => {
@@ -1195,6 +1198,13 @@ function bindIpc() {
     else shell.openPath(full);
   });
   ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text || '')));
+  ipcMain.handle('browser:bounds', (_e, rect) => browser && browser.setBounds(rect));
+  ipcMain.handle('browser:state', () => (browser ? browser.state() : null));
+  ipcMain.handle('browser:user', (_e, action, arg) => browser && browser.user(action, arg));
+  ipcMain.handle('browser:external', (_e) => {
+    const url = browser && browser.state().url;
+    if (url && /^https?:/i.test(url)) shell.openExternal(url);
+  });
 }
 
 // ---------- Старт ----------
@@ -1204,7 +1214,12 @@ app.whenReady().then(async () => {
   const userData = app.getPath('userData');
   codex = new CodexServer(() => settings.codexCommand);
   const bridge = await startBridge(() => rooms);
+  // встроенный браузер для агентов (вкладка «Браузер» боковой панели)
+  browser = new AgentBrowser({ getWindow: () => win, shotDir: path.join(userData, 'browser') });
+  browser.on('state', (st) => win && !win.isDestroyed() && win.webContents.send('browser', st));
+  browser.on('show', (roomId) => win && !win.isDestroyed() && win.webContents.send('browser-show', roomId));
   rooms = new Rooms({
+    browser,
     store: new Store(path.join(userData, 'rooms')),
     runDir: path.join(userData, 'run'),
     bridge,

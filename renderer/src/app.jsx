@@ -995,7 +995,9 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
   const setPanel = (p) => {
     setPanelState(p);
     store('panel', p);
-  };
+  };  // агент взялся за встроенный браузер — показываем его
+  useEffect(() => duo.onBrowserShow((id) => id === room.id && setPanel('browser')), [room.id]);
+
   const [target, setTargetState] = useState(() => store(`target:${room.id}`) || 'both');
   const setTarget = (t) => {
     setTargetState(t);
@@ -1883,6 +1885,12 @@ function GeneralTab({ settings, onSaved }) {
       <Switch checked={!!g.closeToTray} onChange={(v) => set({ closeToTray: v })} label="Сворачивать в трей при закрытии окна" hint="Агенты продолжают работать в фоне. Выйти — через значок в трее" />
       <Switch checked={g.hotkey !== false} onChange={(v) => set({ hotkey: v })} label={`Горячая клавиша ${key}`} hint="Показывает DuoCode из любого приложения и ставит курсор в поле ввода" />
       <Switch checked={g.notifyLimits !== false} onChange={(v) => set({ notifyLimits: v })} label="Уведомления о лимитах" hint="Почти исчерпан, кончится раньше сброса, снова доступен" />
+      <Switch
+        checked={g.browser !== false}
+        onChange={(v) => set({ browser: v })}
+        label="Встроенный браузер для агентов"
+        hint="Claude и Codex открывают страницы во вкладке «Браузер» боковой панели, а вы смотрите вживую. Отдельный браузер: ваших входов и паролей в нём нет"
+      />
     </div>
   );
 }

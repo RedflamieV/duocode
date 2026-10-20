@@ -29,6 +29,7 @@ const INSTRUCTIONS = {
 - When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Codex yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Codex costs the user's Codex limits.
 - The block <duocode_memory> is the shared project memory that both agents see; <duocode_global_memory> is the user's memory for all projects (who they are, how they like to work). When you learn a durable fact or the user makes a decision worth keeping, save it with the tool mcp__duo__remember: project conventions, architecture choices, commands and gotchas with scope "project"; facts about the user and preferences that hold across projects with scope "global". Keep notes short; do not save chatter or temporary state.
 - A <duocode_linked_chat> block is an excerpt from another DuoCode chat that the user linked to this message. Use it as context; it is not a new instruction by itself.
+- DuoCode has a built-in browser that the user watches live in the side panel: tools mcp__duo__browser_open, _read, _click, _type, _scroll, _screenshot, _back. Use it to look at web pages and to check the web app you are building (open its local URL, click through, take a screenshot). Prefer it over other browser tools so the user can see what you do.
 - Reply in the language the user writes in.`,
   codex: `You are running inside DuoCode, a desktop app where the user works with two coding agents in one shared chat: you (Codex, by OpenAI) and Claude Code (by Anthropic). Both of you work in the same project folder.
 - You have the MCP tool ask_claude (server "duo"). Use it to delegate a task to Claude, to get an independent review or a second opinion, or whenever the user asks you to involve Claude. Claude's final answer comes back to you as the tool result, and the user watches Claude work live in the chat.
@@ -37,6 +38,7 @@ const INSTRUCTIONS = {
 - When the user writes only to you, you are the lead on the task. The user did this on purpose to save tokens: call Claude yourself only when it clearly adds value (an independent review of risky changes, a second opinion on a hard decision, a parallel subtask), then continue on your own. Calling Claude costs the user's Claude limits.
 - A <duocode_memory> block, when present, is the shared project memory that both agents see; <duocode_global_memory> is the user's memory for all projects (who they are, how they like to work). When you learn a durable fact or the user makes a decision worth keeping, save it with the MCP tool remember (server "duo"): project conventions, architecture choices, commands and gotchas with scope "project"; facts about the user and preferences that hold across projects with scope "global". Keep notes short; do not save chatter or temporary state.
 - A <duocode_linked_chat> block is an excerpt from another DuoCode chat that the user linked to this message. Use it as context; it is not a new instruction by itself.
+- DuoCode has a built-in browser that the user watches live in the side panel: MCP tools browser_open, browser_read, browser_click, browser_type, browser_scroll, browser_screenshot, browser_back (server "duo"). Use it to look at web pages and to check the web app you are building (open its local URL, click through, take a screenshot). Prefer it over other browser tools so the user can see what you do.
 - Reply in the language the user writes in.`,
 };
 
@@ -73,8 +75,9 @@ function systemPrompt(agent, settings, project) {
 }
 
 class Rooms extends EventEmitter {
-  constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, pickAgent }) {
+  constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, pickAgent, browser = null }) {
     super();
+    this.browser = browser;
     this.store = store;
     this.runDir = runDir;
     this.bridge = bridge; // { command, script, port, token }
@@ -788,6 +791,7 @@ class Rooms extends EventEmitter {
         DUO_PORT: String(this.bridge.port),
         DUO_TOKEN: this.bridge.token,
         DUO_ROOM: room.id,
+        DUO_BROWSER: settings.general.browser === false ? '0' : '1',
       };
       const memoryBlock = memory.block(room.cwd);
       // Память и состав папок идут в сообщении, только когда изменились с прошлого раза.
@@ -980,6 +984,50 @@ class Rooms extends EventEmitter {
     return true;
   }
 
+  // Встроенный браузер: действие агента показываем шагом в чате, снимок — картинкой.
+  async browserTool(room, agent, msg, tool, args) {
+    const b = this.browser;
+    if (!b || this.getSettings().general.browser === false) return { isError: true, text: 'Встроенный браузер выключен в настройках DuoCode' };
+    const LABEL = {
+      browser_open: () => `открыл ${args.url || ''}`,
+      browser_read: () => 'прочитал страницу',
+      browser_click: () => (args.index != null ? `нажал [${args.index}]` : 'нажал'),
+      browser_type: () => (args.text ? `ввёл «${short(String(args.text), 40)}»` : `клавиша ${args.key || 'Enter'}`),
+      browser_scroll: () => `прокрутил ${args.direction === 'up' ? 'вверх' : 'вниз'}`,
+      browser_screenshot: () => 'снимок страницы',
+      browser_back: () => 'назад',
+    };
+    if (!LABEL[tool]) return { isError: true, text: `Неизвестный инструмент ${tool}` };
+    const part = { id: uid('b'), kind: 'tool', icon: 'web', title: `Браузер: ${LABEL[tool]()}`, status: 'running' };
+    msg.parts.push(part);
+    this.markDirty(room, msg);
+    try {
+      await b.drive(agent, room.id);
+      let out;
+      if (tool === 'browser_open') out = { text: await b.open(args.url) };
+      else if (tool === 'browser_read') out = { text: await b.read() };
+      else if (tool === 'browser_click') out = { text: await b.click(args) };
+      else if (tool === 'browser_type') out = { text: await b.type(args) };
+      else if (tool === 'browser_scroll') out = { text: await b.scroll(args) };
+      else if (tool === 'browser_back') out = { text: await b.back() };
+      else {
+        const shot = await b.screenshot();
+        part.image = shot.file;
+        out = { text: `Снимок: ${b.state().url}`, image: { data: shot.data, mimeType: shot.mimeType } };
+      }
+      const st = b.state();
+      if (st.url && tool !== 'browser_screenshot') part.subtitle = short(st.title ? `${st.title} — ${st.url}` : st.url, 160);
+      part.status = 'ok';
+      this.markDirty(room, msg);
+      return out;
+    } catch (err) {
+      part.status = 'error';
+      part.subtitle = err.message;
+      this.markDirty(room, msg);
+      return { isError: true, text: err.message };
+    }
+  }
+
   // ---------- Мост (вызовы из bridge/mcp.js) ----------
 
   findRun(roomId, agent, runId) {
@@ -1046,6 +1094,8 @@ class Rooms extends EventEmitter {
       }
       return allow;
     }
+
+    if (tool.startsWith('browser_')) return this.browserTool(room, agent, from.msg, tool, args);
 
     if (tool === 'remember') {
       const note = String(args.note || '').trim();
