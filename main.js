@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, nativeTheme, Tray, Menu, nativeImage, globalShortcut, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, nativeTheme, Tray, Menu, nativeImage, globalShortcut, safeStorage, clipboard, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -697,8 +697,14 @@ async function botCommand({ name, args }) {
       return tg.say(`${line('Claude', limits.claude)}\n\n${line('Codex', limits.codex)}`);
     }
     case 'app':
-      if (tg.appUrl) return tg.sendApp('📱 Мини-приложение DuoCode (если не открывается — у вашего провайдера может быть заблокирован туннель, пользуйтесь управлением прямо в этом чате):');
-      return tg.say('Мини-приложение выключено. Всё можно делать прямо здесь — /help');
+      if (!settings.telegram.remote) return tg.say('Мини-приложение выключено. Всё можно делать прямо здесь — /help');
+      if (remoteStatus.state === 'ready' && tg.appUrl && !/^restart/i.test(args)) {
+        return tg.sendApp('📱 Мини-приложение DuoCode (не открывается — отправьте «/app restart», туннель перезапустится; или пользуйтесь управлением прямо в этом чате):');
+      }
+      // туннель не работает (или попросили перезапустить) — перезапускаем и пришлём кнопку, когда будет готов
+      appRequested = true;
+      tunnel.restart('по команде /app');
+      return tg.say('🔄 Перезапускаю туннель мини-приложения — пришлю кнопку, когда он заработает (обычно 10–30 секунд).');
     case 'plan':
       if (!args) return tg.say('Напишите задачу после команды: /plan добавь авторизацию');
       return botText({ text: args, plan: true });
@@ -971,13 +977,23 @@ function setupRemote() {
   tunnel.on('status', (s) => {
     remoteStatus = s;
     if (win && !win.isDestroyed()) win.webContents.send('remote', s);
-    if (s.state === 'ready') tg.setApp(s.url);
-    else if (s.state === 'off') tg.setApp(null);
+    if (s.state === 'ready') {
+      tg.setApp(s.url);
+      // туннель перезапускали по команде /app — присылаем кнопку, когда готов
+      if (appRequested) {
+        appRequested = false;
+        tg.sendApp('📱 Туннель снова работает — открывайте:');
+      }
+    } else if (s.state === 'off') tg.setApp(null);
   });
+  // после сна соединения туннеля мертвы — поднимаем заново
+  powerMonitor.on('resume', () => setTimeout(() => tunnel.restart('компьютер вышел из сна'), 5000));
   rooms.on('messages', (roomId, msgs) => remote.broadcast('messages', { roomId, msgs }));
   rooms.on('rooms', (list) => remote.broadcast('rooms', list));
   applyRemote();
 }
+
+let appRequested = false;
 
 async function applyRemote() {
   if (!remote) return;
@@ -1265,6 +1281,7 @@ function bindIpc() {
   ipcMain.handle('telegram:status', () => ({ status: tg.status, bot: tg.bot, chatId: tg.chatId }));
   ipcMain.handle('telegram:test', () => tg.send('👋 Тестовое сообщение от DuoCode. Уведомления работают.'));
   ipcMain.handle('remote:status', () => ({ ...remoteStatus, port: remote && remote.port }));
+  ipcMain.handle('remote:restart', () => tunnel && tunnel.restart('вручную'));
 
   ipcMain.handle('settings:get', () => settings);
   ipcMain.handle('settings:set', (_e, patch) => {
@@ -1372,7 +1389,6 @@ app.whenReady().then(async () => {
     telegramAttention(room, msg, part);
   });
   rooms.on('messages', (roomId, msgs) => trackProgress(roomId, msgs));
-  rooms.on('terminal-show', (id) => win && !win.isDestroyed() && win.webContents.send('terminal-show', id));
   rooms.on('budget', (room, agent, spent) => {
     notify(`${agent === 'claude' ? 'Claude' : 'Codex'}: бюджет чата исчерпан`, `${room.title}: ≈${Math.round(spent * 10) / 10}% недельного лимита`, room.id);
     if (settings.telegram.token && settings.telegram.userId) tg.send(`💸 <b>${agent === 'claude' ? 'Claude' : 'Codex'}</b> · ${esc(room.title)}\nБюджет чата исчерпан (≈${Math.round(spent * 10) / 10}% недельного лимита), агент остановлен.`, { roomId: room.id });

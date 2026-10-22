@@ -104,6 +104,11 @@ function ToolPart({ part, cwd }) {
         </span>
         {hasBody ? <Icon name={open ? 'down' : 'right'} size={14} class="chev" /> : null}
       </button>
+      {part.panel === 'terminal' && (
+        <button class="link small tool-panel-link" onClick={() => window.dispatchEvent(new CustomEvent('duo:panel', { detail: 'terminal' }))}>
+          открыть терминал
+        </button>
+      )}
       {part.image && (
         <div class="tool-image">
           <img class="zoomable" src={imageUrl(part.image)} alt="" loading="lazy" onError={(e) => (e.target.parentNode.style.display = 'none')} />

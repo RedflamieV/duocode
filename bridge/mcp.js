@@ -76,8 +76,9 @@ tools.push(
   {
     name: 'terminal_start',
     description:
-      "Start a long-running command (dev server, watch build, test watcher) in DuoCode's Terminal panel, in the project folder, where the user sees it live. " +
-      'Returns the process id and its first output (after `wait` seconds, default 3). For short commands use your normal shell.',
+      "Start a process that keeps running (dev server, watch build, test watcher) in DuoCode's Terminal panel, in the project folder. " +
+      'Returns the process id and its first output (after `wait` seconds, default 3). Do NOT use it for commands that finish on their own ' +
+      '(one-off build, tests, git, installs) — run those with your normal shell.',
     inputSchema: { type: 'object', properties: { command: { type: 'string' }, wait: { type: 'number', description: 'Seconds to wait before returning output (1-30).' } }, required: ['command'] },
   },
   {

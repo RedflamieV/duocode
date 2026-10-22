@@ -1193,8 +1193,12 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
     store('panel', p);
   };  // агент взялся за встроенный браузер — показываем его
   useEffect(() => duo.onBrowserShow((id) => id === room.id && setPanel('browser')), [room.id]);
-  // агент запустил процесс в терминале — показываем
-  useEffect(() => duo.onTerminalShow((id) => id === room.id && setPanel('terminal')), [room.id]);
+  // «открыть терминал» у шага агента
+  useEffect(() => {
+    const onPanel = (e) => setPanel(e.detail);
+    window.addEventListener('duo:panel', onPanel);
+    return () => window.removeEventListener('duo:panel', onPanel);
+  }, []);
 
   const [target, setTargetState] = useState(() => store(`target:${room.id}`) || 'both');
   const setTarget = (t) => {
@@ -2006,6 +2010,19 @@ function TelegramTab({ settings, onSaved }) {
             </div>
             <div class={`field-hint ${remote.state === 'error' ? 'warn' : ''}`}>
               {!t.userId ? <span class="warn">Сначала укажите свой Telegram ID.</span> : REMOTE[remote.state] || remote.state}
+              {remote.note && remote.state === 'starting' ? ` (${remote.note})` : ''}
+              {t.userId && remote.state !== 'off' && (t.tunnel || 'cloudflare') !== 'custom' && (
+                <>
+                  {' '}
+                  <button class="link" onClick={() => duo.remoteRestart()}>
+                    Перезапустить туннель
+                  </button>
+                </>
+              )}
+            </div>
+            <div class="field-hint">
+              Туннель сам перезапускается, если пропала связь (после сна, смены сети, запуска компьютера без интернета), а кнопка «DuoCode» в Telegram обновляется на новый адрес. Из
+              Telegram перезапустить можно командой «/app restart».
             </div>
           </>
         )}

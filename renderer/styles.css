@@ -1627,3 +1627,4 @@ body.remote .user-actions { opacity: 1; }
 .composer-end .send-btn, .composer-end .stop-btn { flex: none; }
 .md a.file-link { cursor: pointer; }
 .md a.file-link::before { content: "📄"; font-size: 0.85em; margin-right: 2px; text-decoration: none; display: inline-block; }
+.tool-panel-link { margin: 0 0 4px 22px; }

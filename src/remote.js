@@ -7,6 +7,17 @@ const http = require('http');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const net = require('net');
+
+// Свободный локальный порт (для адреса состояния cloudflared).
+const freePort = () =>
+  new Promise((resolve) => {
+    const s = net.createServer().listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+    s.on('error', () => resolve(0));
+  });
 
 // ---------- Проверка подписи Telegram ----------
 
@@ -260,6 +271,8 @@ class Tunnel extends EventEmitter {
     if (this.proc) this.stop();
     this.wanted = true;
     this.provider = provider;
+    this.args = [port, provider, customUrl];
+    clearTimeout(this.retryTimer);
     if (provider === 'custom') {
       const url = customUrl.trim().replace(/\/+$/, '');
       if (!/^https:\/\//.test(url)) return this.emit('status', { state: 'error', error: 'Укажите адрес, начинающийся с https://' });
@@ -282,15 +295,24 @@ class Tunnel extends EventEmitter {
       try {
         bin = await this.ensureBinary();
       } catch (err) {
-        this.emit('status', { state: 'error', error: err.message });
+        // например, при старте компьютера ещё нет интернета — пробуем снова
+        this.emit('status', { state: 'error', error: `${err.message}. Повтор через 20 секунд…` });
+        this.retryTimer = setTimeout(() => this.wanted && this.start(...this.args), 20000);
         return;
       }
       if (!this.wanted) return;
       this.emit('status', { state: 'starting' });
       pattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
-      proc = spawn(bin, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], { windowsHide: true });
+      // --metrics: локальный адрес состояния, по нему сторож видит, есть ли связь с Cloudflare
+      this.metrics = await freePort();
+      const args = ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'];
+      if (this.metrics) args.push('--metrics', `127.0.0.1:${this.metrics}`);
+      proc = spawn(bin, args, { windowsHide: true });
     }
     this.proc = proc;
+    this.startedAt = Date.now();
+    this.unready = 0;
+    this.watch();
     let log = '';
     const onData = (chunk) => {
       log = (log + chunk.toString()).slice(-4000);
@@ -315,8 +337,47 @@ class Tunnel extends EventEmitter {
     });
   }
 
+  // Сторож: туннель жив, только если cloudflared держит связь с Cloudflare. Повис без связи
+  // (после сна, смены сети, при старте без интернета) или адрес не выдан за минуту — перезапуск.
+  watch() {
+    clearInterval(this.watchTimer);
+    const every = Number(process.env.DUO_TUNNEL_CHECK_MS) || 30000; // меньше — только для тестов
+    this.watchTimer = setInterval(async () => {
+      if (!this.wanted || !this.proc) return;
+      if (!this.url) {
+        if (Date.now() - this.startedAt > every * 2) this.restart('адрес не выдан за минуту');
+        return;
+      }
+      if (this.provider !== 'cloudflare' || !this.metrics) return;
+      let ok = false;
+      try {
+        const r = await fetch(`http://127.0.0.1:${this.metrics}/ready`, { signal: AbortSignal.timeout(5000) });
+        ok = r.ok;
+      } catch {}
+      this.unready = ok ? 0 : this.unready + 1;
+      if (this.unready >= 3) this.restart('нет связи с Cloudflare');
+    }, every);
+  }
+
+  // Перезапуск без выключения: старый процесс гасим, новый поднимаем (адрес у быстрого туннеля сменится).
+  restart(reason = '') {
+    if (!this.wanted || !this.args) return;
+    const old = this.proc;
+    this.proc = null;
+    this.url = null;
+    if (old) {
+      try {
+        old.kill();
+      } catch {}
+    }
+    this.emit('status', { state: 'starting', note: reason ? `Перезапуск: ${reason}` : 'Перезапуск' });
+    this.start(...this.args);
+  }
+
   stop() {
     this.wanted = false;
+    clearInterval(this.watchTimer);
+    clearTimeout(this.retryTimer);
     if (this.proc) {
       const p = this.proc;
       this.proc = null;

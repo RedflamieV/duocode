@@ -30,7 +30,6 @@ contextBridge.exposeInMainWorld('duo', {
   },
   onTermList: on('term-list'),
   onTermData: on('term-data'),
-  onTerminalShow: on('terminal-show'),
   branch: {
     start: (id) => ipcRenderer.invoke('branch:start', id),
     status: (id) => ipcRenderer.invoke('branch:status', id),
@@ -76,6 +75,7 @@ contextBridge.exposeInMainWorld('duo', {
   telegramStatus: () => ipcRenderer.invoke('telegram:status'),
   telegramTest: () => ipcRenderer.invoke('telegram:test'),
   remoteStatus: () => ipcRenderer.invoke('remote:status'),
+  remoteRestart: () => ipcRenderer.invoke('remote:restart'),
   checkEnv: () => ipcRenderer.invoke('env:check'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),

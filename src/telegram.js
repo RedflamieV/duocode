@@ -117,8 +117,13 @@ class Telegram extends EventEmitter {
         }).catch(() => {});
       }
       this.setStatus(this.userId ? 'linked' : 'needId');
+      // бот (пере)подключился — кнопка мини-приложения должна вести на текущий адрес
+      if (this.userId && this.appUrl !== undefined && !this.appApplied) this.setApp(this.appUrl);
     } catch (err) {
-      return this.setStatus('error', err.message);
+      // например, DuoCode запустился вместе с Windows раньше, чем появился интернет, — пробуем снова
+      this.setStatus('error', `${err.message}. Повтор через 20 секунд…`);
+      setTimeout(() => id === this.loopId && this.restart(), 20000);
+      return;
     }
     while (id === this.loopId) {
       try {
@@ -264,11 +269,20 @@ class Telegram extends EventEmitter {
   }
 
   // Кнопка «DuoCode» слева от поля ввода в чате с ботом открывает мини-приложение.
+  // Кнопка «DuoCode» у поля ввода в чате с ботом. После перезапуска туннеля адрес новый — если Telegram
+  // в этот момент недоступен, повторяем, пока не получится (иначе кнопка вела бы на мёртвый адрес).
   async setApp(url) {
     this.appUrl = url || null;
+    this.appApplied = false;
+    clearTimeout(this.appTimer);
     if (!this.token || !this.userId) return;
     const menu = url ? { type: 'web_app', text: 'DuoCode', web_app: { url } } : { type: 'default' };
-    await this.api('setChatMenuButton', { chat_id: Number(this.userId), menu_button: menu }).catch(() => {});
+    try {
+      await this.api('setChatMenuButton', { chat_id: Number(this.userId), menu_button: menu });
+      if (this.appUrl === (url || null)) this.appApplied = true;
+    } catch {
+      this.appTimer = setTimeout(() => this.appUrl === (url || null) && this.setApp(url), 30000);
+    }
   }
 
   appButton(roomId) {
