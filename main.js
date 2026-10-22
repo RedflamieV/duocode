@@ -744,7 +744,7 @@ async function botText({ text, file, roomId, plan = false }) {
 let backlog = null; // { id, items }
 
 function ago(date) {
-  const min = Math.round((Date.now() / 1000 - date) / 60);
+  const min = Math.round(((Date.now() + tg.skew) / 1000 - date) / 60);
   if (min < 60) return `${min} мин назад`;
   const h = Math.round(min / 60);
   return h < 24 ? `${h} ч назад` : 'больше суток назад';

@@ -29,6 +29,8 @@ class Telegram extends EventEmitter {
     this.outbox = []; // уведомления, не ушедшие из-за пропавшего интернета
     this.backlogTimer = null;
     this.roomsFile = null;
+    this.skew = 0; // насколько часы серверов Telegram впереди часов компьютера, мс
+
   }
 
   // Связь «сообщение бота → чат» переживает перезапуск: ответ (Reply) на старое уведомление
@@ -83,6 +85,10 @@ class Telegram extends EventEmitter {
       body: JSON.stringify(params),
       signal: AbortSignal.timeout(method === 'getUpdates' ? 70000 : 20000),
     });
+    // время Telegram из ответа: «старое ли сообщение» решаем по нему, а не по часам компьютера,
+    // иначе при часах, сбитых на пару минут, бот считал бы старым каждое сообщение
+    const server = Date.parse(res.headers.get('date') || '');
+    if (server) this.skew = server - Date.now();
     const json = await res.json();
     if (!json.ok) throw new Error(json.description || `Telegram: ${method} не удался`);
     return json.result;
@@ -195,7 +201,7 @@ class Telegram extends EventEmitter {
       const photo = m.photo && m.photo.length ? m.photo[m.photo.length - 1] : null;
       const file = photo ? { id: photo.file_id, name: `photo-${m.message_id}.jpg` } : m.document ? { id: m.document.file_id, name: m.document.file_name || `file-${m.message_id}` } : null;
       const cmd = /^\/(\w+)(?:@\w+)?\s*([\s\S]*)$/.exec(text);
-      if (Date.now() / 1000 - m.date > STALE_SEC) {
+      if ((Date.now() + this.skew) / 1000 - m.date > STALE_SEC) {
         // пришло, пока DuoCode был выключен: копим и спрашиваем владельца одним сообщением
         this.backlog.push(cmd && !file ? { command: cmd[1].toLowerCase(), date: m.date } : { text, file, roomId: replyRoom || null, date: m.date });
         clearTimeout(this.backlogTimer);
