@@ -437,7 +437,7 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
   })().catch((err) => finish({ text: '', error: err.message }));
 
   ev.steer = (text, files) => {
-    if (finished || ev.stopped || !tid || !turnId) return false;
+    if (finished || ev.stopped || ev.paused || !tid || !turnId) return false;
     server.request('turn/steer', { threadId: tid, expectedTurnId: turnId, input: userInput(text, files) }).catch((err) => ev.emit('warning', 'Не удалось дописать: ' + err.message));
     return true;
   };
@@ -446,6 +446,11 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
     ev.stopped = true;
     if (tid && turnId) server.request('turn/interrupt', { threadId: tid, turnId }).catch(() => finish({ text: lastText, stopped: true }));
     else if (!tid) finish({ text: '', stopped: true });
+  };
+  // Пауза: у Codex прерывание хода и так мягкое — тред и контекст сохраняются.
+  ev.interrupt = () => {
+    ev.paused = true;
+    ev.stop();
   };
   return ev;
 }

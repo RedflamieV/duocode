@@ -293,7 +293,7 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   write(userContent(prompt, attachments));
 
   ev.steer = (text, files) => {
-    if (!inputOpen || finished || ev.stopped) return false;
+    if (!inputOpen || finished || ev.stopped || ev.paused) return false;
     clearTimeout(closeTimer);
     write(userContent(text, files));
     return true;
@@ -302,6 +302,19 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
   ev.stop = () => {
     ev.stopped = true;
     killTree(proc);
+  };
+
+  // Пауза: мягко прервать текущий шаг (как Esc в Claude Code) — сессия и контекст сохраняются.
+  ev.interrupt = () => {
+    if (!inputOpen || finished) return ev.stop();
+    ev.paused = true;
+    proc.stdin.write(JSON.stringify({ type: 'control_request', request_id: `pause-${Date.now()}`, request: { subtype: 'interrupt' } }) + '\n');
+    // не ответил на прерывание — останавливаем жёстко
+    setTimeout(() => {
+      if (finished) return;
+      ev.stopped = true;
+      killTree(proc);
+    }, 10000);
   };
   return ev;
 }

@@ -83,6 +83,7 @@ function systemPrompt(agent, settings, project) {
 class Rooms extends EventEmitter {
   constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, pickAgent, browser = null, terminals = null }) {
     super();
+    this.continuations = new Map(); // id сообщения, поставленного на паузу -> его продолжение
     this.browser = browser;
     this.terminals = terminals;
     this.store = store;
@@ -243,6 +244,7 @@ class Rooms extends EventEmitter {
       settings: room.settings,
       context: room.context || {},
       pinned: !!room.pinned,
+      paused: !!room.paused,
       archived: !!room.archived,
       spent: room.spent || null,
       budget: room.budget || null,
@@ -533,6 +535,9 @@ class Rooms extends EventEmitter {
     if (/^\/[\w:.-]+/.test(text)) return this.command(room, text, targets);
     prompt = linkBlock + text;
 
+    // новое сообщение снимает паузу: тем, кому оно адресовано, оно и будет продолжением
+    if (room.paused) this.resume(id, { except: targets });
+
     // агенту, исчерпавшему бюджет чата, задачи не отдаём
     const broke = targets.filter((a) => this.overBudget(room, a));
     if (broke.length) {
@@ -761,12 +766,23 @@ class Rooms extends EventEmitter {
         if (room.title === 'Новый чат') room.title = short(task.split('\n')[0], 60);
         this.markDirty(room, userMsg);
         this.touch(room);
-        // ждём, пока агент освободится от своего хода
-        while (this.main.has(`${room.id}:${agent}`) && !state.cancelled) await new Promise((r) => setTimeout(r, 500));
+        // ждём, пока агент освободится от своего хода (и пока чат на паузе)
+        while ((this.main.has(`${room.id}:${agent}`) || room.paused) && !state.cancelled) await new Promise((r) => setTimeout(r, 500));
         if (state.cancelled) break;
-        const { done } = this.runAgent(room, agent, { prompt: context + prompt, attachments: i === 0 ? attachments : [], pipeline: label });
-        const r = await done;
-        if (r.error || r.stopped) break;
+        let { msg: stepMsg, done } = this.runAgent(room, agent, { prompt: context + prompt, attachments: i === 0 ? attachments : [], pipeline: label });
+        let r = await done;
+        // шаг поставили на паузу — после «Продолжить» дожидаемся его продолжения
+        while (stepMsg.status === 'paused' && !state.cancelled) {
+          await this.waitResume(room, state);
+          if (state.cancelled) break;
+          for (let k = 0; k < 20 && !this.continuations.has(stepMsg.id); k++) await new Promise((res) => setTimeout(res, 100));
+          const cont = this.continuations.get(stepMsg.id);
+          this.continuations.delete(stepMsg.id);
+          if (!cont) break; // пользователь сам написал агенту — продолжение идёт через его сообщение
+          r = await cont;
+          stepMsg = [...room.messages].reverse().find((m) => m.role === 'agent' && m.agent === agent && !m.parentId) || stepMsg;
+        }
+        if (state.cancelled || r.error || r.stopped) break;
       }
     } finally {
       this.pipelines.delete(id);
@@ -837,6 +853,10 @@ class Rooms extends EventEmitter {
   stop(id) {
     for (const [key, q] of this.queues) if (key.startsWith(id + ':')) q.length = 0;
     const room = this.rooms.get(id);
+    if (room && room.paused) {
+      room.paused = false;
+      this.emitRooms();
+    }
     if (room) {
       for (const m of room.messages) {
         if (m.role === 'user' && m.queued && m.queued.length) {
@@ -852,6 +872,53 @@ class Rooms extends EventEmitter {
       if (run.handle) run.handle.stop();
     }
     for (const p of this.pipelines.values()) if (p.roomId === id) p.cancelled = true;
+  }
+
+  // ---------- Пауза ----------
+
+  // Мягко прервать текущие шаги агентов чата: сессии, контекст и очередь сохраняются.
+  pause(id) {
+    const room = this.rooms.get(id);
+    if (!room) return null;
+    room.paused = true;
+    for (const run of this.runs.values()) {
+      if (run.room.id !== id || run.msg.duelId) continue; // «раздельно» в своих копиях — не трогаем
+      run.pauseRequested = true;
+      if (run.handle) (run.handle.interrupt || run.handle.stop)();
+    }
+    this.store.save(room);
+    this.emitRooms();
+    return this.get(id);
+  }
+
+  // Снять с паузы: агентам, прерванным паузой, — «продолжай», остальным — их очередь.
+  // except — агенты, которым пользователь сам написал новое сообщение (оно и будет продолжением).
+  resume(id, { except = [] } = {}) {
+    const room = this.rooms.get(id);
+    if (!room || !room.paused) return this.get(id);
+    room.paused = false;
+    for (const agent of AGENTS) {
+      const key = `${room.id}:${agent}`;
+      const last = [...room.messages].reverse().find((m) => m.role === 'agent' && m.agent === agent && !m.parentId && !m.duelId);
+      if (last && last.status === 'paused' && !last.resumed) {
+        last.resumed = true;
+        this.markDirty(room, last);
+        if (except.includes(agent)) continue;
+        if (this.main.has(key)) continue;
+        const { done } = this.runAgent(room, agent, {
+          prompt: 'Работа была на паузе — продолжай с того места, где остановился. Если шаг прервался посередине, сначала проверь, что он успел сделать.',
+          pipeline: last.pipeline || null,
+        });
+        this.continuations.set(last.id, done);
+      } else if (!this.main.has(key)) this.nextInQueue(room, agent);
+    }
+    this.store.save(room);
+    this.emitRooms();
+    return this.get(id);
+  }
+
+  async waitResume(room, state = {}) {
+    while (room.paused && !state.cancelled) await new Promise((r) => setTimeout(r, 400));
   }
 
   // Сводка того, что агент пропустил в общем чате.
@@ -980,9 +1047,11 @@ class Rooms extends EventEmitter {
         next.done.then(resolveDone);
         return;
       }
-      msg.status = r.stopped ? 'stopped' : r.error ? 'error' : 'done';
+      msg.status = run.pauseRequested ? 'paused' : r.stopped ? 'stopped' : r.error ? 'error' : 'done';
+      // прерванный паузой ход Claude Code сообщает как ошибку — для паузы это не ошибка
+      if (run.pauseRequested) r = { ...r, error: null };
       // ход упал из-за сети: когда связь вернётся, DuoCode сам попросит агента продолжить (см. resumeAfterNetwork)
-      if (r.error && !r.stopped && !isolated && NET_ERROR.test(r.error)) msg.netError = true;
+      if (r.error && !r.stopped && !run.pauseRequested && !isolated && NET_ERROR.test(r.error)) msg.netError = true;
       msg.error = r.error || null;
       msg.finalText = r.text || '';
       msg.cost = r.cost;
@@ -1165,6 +1234,7 @@ class Rooms extends EventEmitter {
   }
 
   nextInQueue(room, agent) {
+    if (room.paused) return; // на паузе очередь ждёт
     const key = `${room.id}:${agent}`;
     const q = this.queues.get(key);
     if (!q || !q.length) return;

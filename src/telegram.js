@@ -108,6 +108,8 @@ class Telegram extends EventEmitter {
             { command: 'new', description: 'Новый чат в проекте' },
             { command: 'to', description: 'Кому писать: Claude, Codex, оба, авто' },
             { command: 'plan', description: 'Задача в режиме «сначала план»' },
+            { command: 'pause', description: 'Пауза — продолжить можно потом' },
+            { command: 'resume', description: 'Продолжить после паузы' },
             { command: 'stop', description: 'Остановить агентов' },
             { command: 'rename', description: 'Переименовать чат' },
             { command: 'limits', description: 'Лимиты' },

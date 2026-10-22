@@ -466,7 +466,7 @@ function ChatMenu({ items, active, onPick }) {
   );
 }
 
-function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [], cwd = null, pipelines = [], focusTick = 0, roomId = null }) {
+function Composer({ onSend, onStop, onPause, onResume, paused = false, running, busy = [], target, setTarget, autoFocus, placeholder, commands = [], cwd = null, pipelines = [], focusTick = 0, roomId = null }) {
   const [links, setLinks] = useState([]); // чаты, на которые ссылается сообщение
   const [chatList, setChatList] = useState(null);
   const [chatIndex, setChatIndex] = useState(0);
@@ -604,6 +604,16 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
         ? 'Ctrl+Enter — отправить · / — команды · # — другой чат'
         : 'Enter — отправить · Shift+Enter — новая строка · / — команды · # — другой чат';
 
+  const pausedBar = paused && onResume && (
+    <div class="paused-bar">
+      <Icon name="pause" size={14} />
+      <span>Агенты на паузе — контекст и очередь сохранены. Новое сообщение тоже снимет паузу.</span>
+      <button class="btn small primary" onClick={onResume}>
+        <Icon name="play" size={12} /> Продолжить
+      </button>
+    </div>
+  );
+
   return (
     <div
       class={`composer ${drag ? 'drag-over' : ''}`}
@@ -614,6 +624,7 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
       onDragLeave={() => setDrag(false)}
       onDrop={onDrop}
     >
+      {pausedBar}
       {showFiles && <FileMenu items={fileItems} active={Math.min(fileIndex, Math.max(0, fileItems.length - 1))} onPick={pickFile} />}
       {showChats && <ChatMenu items={chatItems} active={Math.min(chatIndex, Math.max(0, chatItems.length - 1))} onPick={pickChat} />}
       {links.length > 0 && (
@@ -754,8 +765,13 @@ function Composer({ onSend, onStop, running, busy = [], target, setTarget, autoF
           <span class={`composer-hint ${steering ? 'steering' : ''}`} title={hint}>
             {hint}
           </span>
+          {running && onPause && !paused && (
+            <button class="pause-btn" onClick={onPause} title="Пауза: агенты прервут текущий шаг, контекст и очередь сохранятся. Продолжить — кнопкой ▶ или новым сообщением">
+              <Icon name="pause" size={16} />
+            </button>
+          )}
           {running && (
-            <button class="stop-btn" onClick={onStop} title="Остановить всех агентов в этом чате">
+            <button class="stop-btn" onClick={onStop} title="Остановить всех агентов в этом чате (очередь очистится)">
               <Icon name="stop" size={16} />
             </button>
           )}
@@ -1279,6 +1295,9 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
         <Composer
           onSend={send}
           onStop={() => duo.stop(room.id)}
+          onPause={() => duo.pause(room.id)}
+          onResume={() => duo.resume(room.id)}
+          paused={room.paused}
           running={running}
           busy={['claude', 'codex'].filter((a) => room.running && room.running[a])}
           target={target}

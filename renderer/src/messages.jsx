@@ -608,6 +608,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
         <ModelTag msg={msg} />
         {running && <span class="working">работает…</span>}
         {msg.status === 'stopped' && <span class="msg-meta">остановлен</span>}
+        {msg.status === 'paused' && <span class="msg-meta paused-meta">на паузе{msg.resumed ? ' · продолжен ниже' : ''}</span>}
       </div>
       <div class="msg-body">
         <Parts msg={msg} room={room} byId={byId} />

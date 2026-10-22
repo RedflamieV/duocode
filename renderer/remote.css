@@ -76,7 +76,7 @@ body.remote .codeblock pre { font-size: 12px; }
   font-size: 15px;
   line-height: 1.4;
 }
-.m-input .send-btn, .m-input .stop-btn { width: 40px; height: 40px; border-radius: 50%; flex: none; }
+.m-input .send-btn, .m-input .stop-btn, .m-input .pause-btn { width: 40px; height: 40px; border-radius: 50%; flex: none; }
 .m-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; overflow-x: auto; scrollbar-width: none; }
 .m-bar::-webkit-scrollbar { display: none; }
 .m-bar .segmented { flex: none; }

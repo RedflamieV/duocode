@@ -653,7 +653,7 @@ const HELP =
   '• Дальше просто пишите задачу — она уйдёт агентам в выбранный чат. Можно прислать скриншот или файл.\n' +
   '• /to — кому писать: Claude, Codex, обоим или «авто»\n' +
   '• /plan задача — сначала план, потом выполнение\n' +
-  '• /stop — остановить, /limits — лимиты\n' +
+  '• /pause — пауза (контекст сохраняется), /resume — продолжить, /stop — остановить совсем, /limits — лимиты\n' +
   '• /rename название — переименовать выбранный чат\n' +
   '• /compact, /clear, /review, /init — команды агентов\n\n' +
   'Ход работы показывается в одном сообщении, которое обновляется. Подтверждения и вопросы приходят с кнопками.';
@@ -691,6 +691,12 @@ async function botCommand({ name, args }) {
       if (!room) return tg.say('Чат не выбран: /chats');
       rooms.stop(room.id);
       return tg.say(`⏹ Остановлено в «${esc(room.title)}»`);
+    case 'pause':
+      if (!room) return tg.say('Чат не выбран: /chats');
+      return botButton({ action: 'pause', value: room.id });
+    case 'resume':
+      if (!room) return tg.say('Чат не выбран: /chats');
+      return botButton({ action: 'resume', value: room.id });
     case 'limits': {
       const line = (name, d) =>
         !d || !d.ok ? `<b>${name}</b>: ${esc((d && d.error) || 'нет данных')}` : `<b>${name}</b>\n` + d.windows.map((w) => `  ${esc(w.label)}: ${Math.round(w.percent)}% · сброс ${new Date(w.resetsAt).toLocaleString()}`).join('\n');
@@ -816,6 +822,15 @@ async function botButton({ action, value, messageId }) {
     rooms.stop(value);
     return tg.say('⏹ Остановлено');
   }
+  if (action === 'pause') {
+    const r = rooms.pause(value);
+    return tg.say(`⏸ На паузе: «${esc(r ? r.title : '')}». Контекст и очередь сохранены.`, [[{ text: '▶ Продолжить', callback_data: `c|resume|${value}` }]]);
+  }
+  if (action === 'resume') {
+    const r = rooms.resume(value);
+    followed.set(value, Date.now() + 6 * 3600 * 1000);
+    return tg.say(`▶ Продолжаю: «${esc(r ? r.title : '')}»`);
+  }
 }
 
 // Ход работы агента — одно сообщение, которое обновляется раз в несколько секунд.
@@ -848,7 +863,7 @@ function trackProgress(roomId, msgs) {
     const secs = Math.round((Date.now() - m.ts) / 1000);
     const draft = m.draft && m.draftKind !== 'thinking' ? `\n\n<i>${esc(plain(toTelegram(m.draft.slice(-300))))}</i>` : '';
     const text = `⏳ <b>${who}</b> работает · ${secs < 60 ? secs + ' с' : Math.floor(secs / 60) + ' мин'}\n${steps.join('\n')}${draft}`;
-    const buttons = [[{ text: '⏹ Остановить', callback_data: `c|stop|${roomId}` }]];
+    const buttons = [[{ text: '⏸ Пауза', callback_data: `c|pause|${roomId}` }, { text: '⏹ Остановить', callback_data: `c|stop|${roomId}` }]];
     if (!st) {
       st = { tgId: null, text: '', at: 0, timer: null };
       progress.set(m.id, st);
@@ -963,6 +978,8 @@ function setupRemote() {
       editMessage: (id, msgId, text, opts) => rooms.editMessage(id, msgId, text, opts),
       send: (id, payload) => rooms.send(id, payload),
       stop: (id) => rooms.stop(id),
+      pause: (id) => rooms.pause(id),
+      resume: (id) => rooms.resume(id),
       approve: (id, approvalId, decision, extra) => rooms.respondApproval(id, approvalId, decision, extra),
       planAction: (id, msgId, action, feedback) => rooms.planAction(id, msgId, action, feedback),
       revert: (id, msgId, redo) => rooms.revert(id, msgId, redo),
@@ -1105,6 +1122,8 @@ function bindIpc() {
   ipcMain.handle('rooms:rename', (_e, id, title) => rooms.rename(id, title));
   ipcMain.handle('rooms:resend', (_e, id, msgId) => rooms.resend(id, msgId));
   ipcMain.handle('rooms:mark', (_e, id, patch) => rooms.mark(id, patch));
+  ipcMain.handle('rooms:pause', (_e, id) => rooms.pause(id));
+  ipcMain.handle('rooms:resume', (_e, id) => rooms.resume(id));
   ipcMain.handle('rooms:budget', (_e, id, budget) => rooms.setBudget(id, budget));
   ipcMain.handle('schedules:save', (_e, s) => {
     const list = scheduleList();

@@ -226,9 +226,22 @@ function Composer({ room, onLocal }) {
 
   return (
     <div class="m-composer">
-      {steering && <div class="m-hint">Агент работает — сообщение допишется в его работу</div>}
+      {room.paused && (
+        <div class="paused-bar">
+          <span>⏸ На паузе — контекст и очередь сохранены</span>
+          <button class="btn small primary" onClick={() => duo.resume(room.id)}>
+            ▶ Продолжить
+          </button>
+        </div>
+      )}
+      {steering && !room.paused && <div class="m-hint">Агент работает — сообщение допишется в его работу</div>}
       <div class="m-input">
         <textarea ref={ref} rows={1} value={text} placeholder="Задача для агентов…" onInput={(e) => setText(e.target.value)} />
+        {running && !text.trim() && (
+          <button class="pause-btn" onClick={() => duo.pause(room.id)} title="Пауза: прервать шаг, контекст сохранить">
+            <Icon name="pause" size={18} />
+          </button>
+        )}
         {running && !text.trim() ? (
           <button class="stop-btn" onClick={() => duo.stop(room.id)} title="Остановить">
             <Icon name="stop" size={18} />

@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('duo', {
   removeRoom: (id) => ipcRenderer.invoke('rooms:remove', id),
   send: (id, payload) => ipcRenderer.invoke('rooms:send', id, payload),
   stop: (id) => ipcRenderer.invoke('rooms:stop', id),
+  pause: (id) => ipcRenderer.invoke('rooms:pause', id),
+  resume: (id) => ipcRenderer.invoke('rooms:resume', id),
   approve: (id, approvalId, decision, extra) => ipcRenderer.invoke('rooms:approve', id, approvalId, decision, extra),
   planAction: (id, msgId, action, feedback) => ipcRenderer.invoke('rooms:plan', id, msgId, action, feedback),
   pickAttachments: () => ipcRenderer.invoke('attach:pick'),
