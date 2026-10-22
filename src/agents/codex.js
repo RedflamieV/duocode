@@ -5,6 +5,14 @@ const { EventEmitter } = require('events');
 const { spawnTool } = require('../env');
 const { clip, killTree } = require('./util');
 
+// Причина падения из stderr: обычные записи журнала (с отметкой времени — например, неудачные правки
+// файлов) к падению отношения не имеют, ищем сообщение самого процесса: «Error: …» или «panicked at …».
+function crashReason(stderr) {
+  const text = String(stderr || '').replace(/\x1b\[[0-9;]*m/g, '');
+  const m = /^(?:Error: |thread '.*' panicked at )[\s\S]*/m.exec(text);
+  return m ? ` ${clip(m[0].trim(), 400)}` : '';
+}
+
 class CodexServer extends EventEmitter {
   constructor(getCommand) {
     super();
@@ -63,7 +71,12 @@ class CodexServer extends EventEmitter {
         reject(err);
       };
       proc.on('error', (err) => fail(err));
-      proc.on('exit', (code) => fail(new Error(`codex app-server завершился (код ${code}). ${this.stderr.trim().slice(-500)}`)));
+      proc.on('exit', (code) => {
+        const err = new Error(`Codex (app-server) неожиданно завершился (код ${code}).${crashReason(this.stderr)}`);
+        err.crashed = true;
+        this.stderr = '';
+        fail(err);
+      });
 
       this.rawRequest('initialize', {
         clientInfo: { name: 'duocode', title: 'DuoCode', version: '2.0.0' },
@@ -382,7 +395,7 @@ function runCodex(server, { prompt, action, review, attachments, plan, threadId,
       }
     },
     onExit(err) {
-      finish({ text: lastText, error: err.message });
+      finish({ text: lastText, error: err.message, crashed: !!err.crashed && !ev.stopped });
     },
   };
 
