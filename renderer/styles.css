@@ -1625,3 +1625,5 @@ body.remote .user-actions { opacity: 1; }
 .composer-end { flex: 1 1 0; min-width: 72px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .composer-end .composer-hint { display: block; flex: 0 1 auto; min-width: 0; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .composer-end .send-btn, .composer-end .stop-btn { flex: none; }
+.md a.file-link { cursor: pointer; }
+.md a.file-link::before { content: "📄"; font-size: 0.85em; margin-right: 2px; text-decoration: none; display: inline-block; }

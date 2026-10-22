@@ -11,6 +11,19 @@ export function Lightbox() {
   const [src, setSrc] = useState(null);
   useEffect(() => {
     const onClick = (e) => {
+      // ссылка агента на файл на компьютере
+      const fileLink = e.target.closest && e.target.closest('a[data-file]');
+      if (fileLink) {
+        e.preventDefault();
+        e.stopPropagation();
+        const p = fileLink.getAttribute('data-file');
+        if (window.duo.platform === 'telegram') {
+          // на телефоне файл не открыть — картинку покажем, остальное подскажем
+          if (isImage(p)) setSrc(imageUrl(p));
+          else alert(`Файл на компьютере:\n${p}`);
+        } else window.duo.openFile('', p);
+        return;
+      }
       // картинка из интернета в ответе агента — грузим только по нажатию
       const remote = e.target.closest && e.target.closest('.remote-img');
       if (remote) {

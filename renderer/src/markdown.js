@@ -38,10 +38,34 @@ function localImage(src) {
   return base.replace(/[\\/]+$/, '') + sep + p.replace(/^\.[\\/]/, '').replace(/[\\/]/g, sep);
 }
 
+// Ссылка агента на файл на компьютере: [README](C:\proj\README.md), [код](/c:/proj/src/a.ts:12),
+// [патч](file:///…), [файл](src/app.js#L40). Номер строки отбрасываем, путь от папки проекта достраиваем.
+function localLink(href) {
+  if (!href || /^(https?|mailto|tel|data|blob|javascript|vbscript|tg):/i.test(href) || href.startsWith('#')) return null;
+  let p = href.replace(/^file:\/\//i, ''); // file:///home/… → /home/…, file:///C:/… → /C:/…
+  try {
+    p = decodeURI(p);
+  } catch {}
+  p = p.replace(/#L?\d+(-L?\d+)?$/i, '').replace(/:(\d+)(:\d+)?$/, '');
+  if (/^\/[a-zA-Z]:[\\/]/.test(p)) p = p.slice(1); // /C:/… → C:/…
+  if (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('/') || p.startsWith('\\\\')) return p;
+  if (!base || !/[\\/.]/.test(p)) return null;
+  const sep = base.includes('\\') ? '\\' : '/';
+  return base.replace(/[\\/]+$/, '') + sep + p.replace(/^\.[\\/]/, '').replace(/[\\/]/g, sep);
+}
+
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
-    node.setAttribute('target', '_blank');
-    node.setAttribute('rel', 'noreferrer');
+    if (node.__file) {
+      // открывает DuoCode (см. attachments.jsx): программой по умолчанию, исполняемые — только в папке
+      node.setAttribute('data-file', node.__file);
+      node.setAttribute('href', '#');
+      node.setAttribute('title', node.__file);
+      node.classList.add('file-link');
+    } else {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noreferrer');
+    }
   }
   if (node.tagName === 'IMG') {
     // адрес собран нами (см. ниже), поэтому ставим его уже после проверки DOMPurify
@@ -80,6 +104,11 @@ function remoteButtons(html) {
 // Путь вроде C:\... или file:... DOMPurify отбросила бы как неизвестную схему — запоминаем
 // готовый адрес до проверки и ставим его после.
 DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+  if (node.tagName === 'A' && data.attrName === 'href') {
+    const file = localLink(data.attrValue);
+    if (file) node.__file = file;
+    return;
+  }
   if (node.tagName !== 'IMG' || data.attrName !== 'src') return;
   const local = localImage(data.attrValue);
   if (local) node.__localSrc = imageUrl(local);
