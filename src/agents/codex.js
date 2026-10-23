@@ -2,7 +2,7 @@
 // Один процесс обслуживает все чаты; события раздаются по threadId.
 const path = require('path');
 const { EventEmitter } = require('events');
-const { spawnTool } = require('../env');
+const { spawnCodex, isWin } = require('../env');
 const { clip, killTree } = require('./util');
 
 // Причина падения из stderr: обычные записи журнала (с отметкой времени — например, неудачные правки
@@ -32,7 +32,7 @@ class CodexServer extends EventEmitter {
     this.ready = new Promise((resolve, reject) => {
       let proc;
       try {
-        proc = spawnTool(this.getCommand(), ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] });
+        proc = spawnCodex(this.getCommand(), ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (err) {
         this.ready = null;
         reject(new Error(`${err.message}. Установите Codex и перезапустите DuoCode.`));
@@ -71,8 +71,13 @@ class CodexServer extends EventEmitter {
         reject(err);
       };
       proc.on('error', (err) => fail(err));
-      proc.on('exit', (code) => {
-        const err = new Error(`Codex (app-server) неожиданно завершился (код ${code}).${crashReason(this.stderr)}`);
+      proc.on('exit', (code, signal) => {
+        // обёртка могла умереть раньше самого Codex — закрываем его вход, чтобы он не работал дальше сиротой
+        for (const s of [proc.stdin, proc.stdout, proc.stderr]) s && s.destroy();
+        let reason = crashReason(this.stderr);
+        // так на Windows выглядит процесс, завершённый извне (taskkill /F, Stop-Process, диспетчер задач)
+        if (!reason && (signal || (isWin && code === 1))) reason = ' Похоже, его процесс завершили извне — например, командой, останавливающей все процессы Node или Codex.';
+        const err = new Error(`Codex (app-server) неожиданно завершился (${signal ? `сигнал ${signal}` : `код ${code}`}).${reason}`);
         err.crashed = true;
         this.stderr = '';
         fail(err);

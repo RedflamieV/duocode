@@ -191,6 +191,18 @@ class Rooms extends EventEmitter {
     return true;
   }
 
+  // Команда агента, которая могла убить чужой процесс (taskkill, Stop-Process, kill…): в упавшем ходе
+  // или в ходах, которые идут прямо сейчас. Нужна, чтобы объяснить внезапное падение Codex.
+  killerCommand(crashed) {
+    const KILL = /\b(taskkill|tskill|Stop-Process|kill|pkill|killall|kill-port|fkill)\b|\bwmic\b.*\bdelete\b/i;
+    const find = (m) => m.parts.filter((p) => p.kind === 'tool').slice(-3).reverse().find((p) => p.command && KILL.test(p.command));
+    for (const m of [crashed, ...[...this.runs.values()].map((r) => r.msg)]) {
+      const t = m && find(m);
+      if (t) return { agent: m.agent, command: t.command };
+    }
+    return null;
+  }
+
   // Есть ли ходы, упавшие из-за сети и ещё не продолженные.
   waitingForNetwork() {
     for (const room of this.rooms.values()) if (room.messages.some((m) => m.netError && !m.netResumed)) return true;
@@ -1075,7 +1087,8 @@ class Rooms extends EventEmitter {
       // Один раз на задачу: если падает снова, значит, дело не в случайном сбое.
       if (r.crashed && !run.pauseRequested && !opts.crashRetry && !isolated && !fork && !action && !parentId && this.main.get(key) === msg.id) {
         this.main.delete(key);
-        msg.error = `${r.error} DuoCode перезапустил ${NAME[agent]} — продолжение ниже.`;
+        const killer = this.killerCommand(msg);
+        msg.error = `${r.error}${killer ? ` В этот момент ${NAME[killer.agent]} выполнял команду \`${short(killer.command, 160)}\` — скорее всего, она и завершила процесс.` : ''} DuoCode перезапустил ${NAME[agent]} — продолжение ниже.`;
         this.markDirty(room, msg);
         const note = { id: uid('m'), role: 'system', ts: Date.now(), text: `${NAME[agent]} неожиданно завершился — перезапускаю и прошу продолжить с того места, где он остановился.` };
         room.messages.push(note);
