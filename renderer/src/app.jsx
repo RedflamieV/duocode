@@ -50,6 +50,7 @@ const TARGETS = [
 ];
 
 const IMG = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const NO_PROJECT = '__chat'; // «проект» нового чата: без проекта
 
 function store(key, value) {
   try {
@@ -231,17 +232,17 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
     for (const r of rooms) {
       if (r.archived || r.pinned) {
         const p = r.projectId && byId.get(r.projectId);
-        const name = p ? p.name : baseName(r.cwd);
+        const name = r.noProject ? 'Чаты без проекта' : p ? p.name : baseName(r.cwd);
         if (needle && !r.title.toLowerCase().includes(needle) && !(name || '').toLowerCase().includes(needle)) continue;
         if (r.archived) archive.rooms.push(r);
         else pinned.rooms.push(r);
         continue;
       }
       const p = r.projectId && byId.get(r.projectId);
-      const key = p ? p.id : `dir:${r.cwd || ''}`;
-      const name = p ? p.name : baseName(r.cwd) || 'Без проекта';
+      const key = r.noProject ? 'chats' : p ? p.id : `dir:${r.cwd || ''}`;
+      const name = r.noProject ? 'Чаты без проекта' : p ? p.name : baseName(r.cwd) || 'Без проекта';
       if (needle && !r.title.toLowerCase().includes(needle) && !name.toLowerCase().includes(needle)) continue;
-      if (!map.has(key)) map.set(key, { key, project: p || null, name, folders: p ? p.folders : [r.cwd], rooms: [] });
+      if (!map.has(key)) map.set(key, r.noProject ? { key, special: 'chat', plain: true, name, folders: [], rooms: [] } : { key, project: p || null, name, folders: p ? p.folders : [r.cwd], rooms: [] });
       map.get(key).rooms.push(r);
     }
     if (!needle) for (const p of projects) if (!map.has(p.id)) map.set(p.id, { key: p.id, project: p, name: p.name, folders: p.folders, rooms: [] });
@@ -291,6 +292,13 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
                 <span class="group-name">{g.name}</span>
                 {g.folders.length > 1 && <span class="group-count">{g.folders.length}</span>}
               </button>
+              {g.plain && (
+                <span class="group-actions">
+                  <button class="icon-btn tiny" title="Новый чат без проекта" onClick={() => onNewIn(NO_PROJECT)}>
+                    <Icon name="plus" size={13} />
+                  </button>
+                </span>
+              )}
               {g.project && (
                 <span class="group-actions">
                   <button class="icon-btn tiny" title="Новый чат в проекте" onClick={() => onNewIn(g.project.id)}>
@@ -1096,10 +1104,10 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
         <button
           class="project-chip"
           onClick={() => (project ? onEditProject(project) : duo.openProject(room.cwd))}
-          title={project ? `Проект «${project.name}»:\n${project.folders.join('\n')}\n\nНажмите, чтобы изменить` : room.cwd}
+          title={project ? `Проект «${project.name}»:\n${project.folders.join('\n')}\n\nНажмите, чтобы изменить` : room.noProject ? `Чат без проекта. Файлы, которые создадут агенты, — в его папке:\n${room.cwd}\n\nНажмите, чтобы открыть` : room.cwd}
         >
-          <Icon name="folder" size={13} />
-          {project ? project.name : baseName(room.cwd)}
+          <Icon name={room.noProject ? 'chat' : 'folder'} size={13} />
+          {project ? project.name : room.noProject ? 'Без проекта' : baseName(room.cwd)}
           {project && project.folders.length > 1 && <small> · {project.folders.length} папки</small>}
         </button>
         {room.branch && <BranchChip room={room} />}
@@ -1167,7 +1175,7 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
               <button onClick={() => { setMenu(false); setBudgetOpen(true); }}>
                 <Icon name="chart" size={14} /> Бюджет чата{room.budget ? ` · ${pct1(room.budget)}` : '…'}
               </button>
-              {!room.branch && (
+              {!room.branch && !room.noProject && (
                 <button
                   onClick={async () => {
                     setMenu(false);
@@ -1183,10 +1191,10 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
                 </button>
               )}
               <button onClick={() => { setMenu(false); duo.openProject(room.cwd); }}>
-                <Icon name="external" size={14} /> Открыть папку проекта
+                <Icon name="external" size={14} /> {room.noProject ? 'Открыть папку чата' : 'Открыть папку проекта'}
               </button>
               <button onClick={() => { setMenu(false); setPanel('memory'); }}>
-                <Icon name="memory" size={14} /> Память проекта
+                <Icon name="memory" size={14} /> {room.noProject ? 'Память' : 'Память проекта'}
               </button>
               <button onClick={() => { setMenu(false); duo.exportRoom(room.id); }}>
                 <Icon name="external" size={14} /> Экспорт в Markdown
@@ -1468,7 +1476,10 @@ export function ProjectEditor({ project, onClose, onSaved }) {
 
 function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditProject }) {
   const workspaces = settings.workspaces || [];
-  const [projectId, setProjectId] = useState(initialProject || (workspaces[0] && workspaces[0].id) || '');
+  // последний выбор запоминаем; удалённый проект — не выбор
+  const known = (id) => id === NO_PROJECT || workspaces.some((p) => p.id === id);
+  const [projectId, setProjectId] = useState([initialProject, store('project:new')].find((id) => id && known(id)) || (workspaces[0] && workspaces[0].id) || NO_PROJECT);
+  const plain = projectId === NO_PROJECT; // просто чат, без проекта
   const current = workspaces.find((p) => p.id === projectId) || null;
   const project = current ? current.folders[0] : '';
   const [target, setTarget] = useState(store('target:new') || 'both');
@@ -1495,15 +1506,19 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
     if (initialProject) setProjectId(initialProject);
   }, [initialProject]);
   useEffect(() => {
-    if (!current && workspaces[0]) setProjectId(workspaces[0].id);
+    if (!current && !plain) setProjectId(workspaces[0] ? workspaces[0].id : NO_PROJECT);
   }, [workspaces.length]);
+  useEffect(() => {
+    store('project:new', projectId);
+  }, [projectId]);
 
   const send = async (text, agents, opts = {}) => {
-    if (!current) return onEditProject({ name: '', folders: [] }, (p) => setProjectId(p.id));
+    if (!current && !plain) return onEditProject({ name: '', folders: [] }, (p) => setProjectId(p.id));
     // название сразу из задачи — по нему же называется своя ветка чата
     const title = text.trim().split('\n')[0].slice(0, 60) || undefined;
-    const room = await duo.createRoom({ projectId: current.id, settings: models, title: ownBranch ? title : undefined });
-    if (ownBranch) await duo.branch.start(room.id).catch((err) => alert(errText(err)));
+    const branch = ownBranch && !plain;
+    const room = await duo.createRoom(plain ? { noProject: true, settings: models } : { projectId: current.id, settings: models, title: branch ? title : undefined });
+    if (branch) await duo.branch.start(room.id).catch((err) => alert(errText(err)));
     store(`target:${room.id}`, target);
     // сначала открываем чат, потом отправляем — долгий сценарий не должен держать на этом экране
     onCreated(room.id);
@@ -1532,20 +1547,21 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
         <EnvWarning env={env} />
         <div class="project-row">
           <Icon name="folder" size={15} />
-          {workspaces.length ? (
-            <label class="select project-select">
-              <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-                {workspaces.map((p) => (
-                  <option value={p.id} key={p.id}>
-                    {p.name} — {p.folders.length > 1 ? `${p.folders.length} папки` : p.folders[0]}
-                  </option>
-                ))}
-              </select>
-              <Icon name="down" size={13} />
-            </label>
-          ) : (
-            <span class="muted">Проектов пока нет</span>
-          )}
+          <label class="select project-select">
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value={NO_PROJECT}>Без проекта — просто чат</option>
+              {workspaces.length > 0 && (
+                <optgroup label="Проекты">
+                  {workspaces.map((p) => (
+                    <option value={p.id} key={p.id}>
+                      {p.name} — {p.folders.length > 1 ? `${p.folders.length} папки` : p.folders[0]}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            <Icon name="down" size={13} />
+          </label>
           {current && (
             <button class="btn" onClick={() => onEditProject(current)} title="Название и папки проекта">
               Изменить
@@ -1566,10 +1582,12 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
           </div>
         )}
         <div class="new-models">
-          <label class="branch-toggle" title="Агенты этого чата будут менять отдельную копию проекта на своей git-ветке, а в основную папку изменения попадут, когда вы их перенесёте">
-            <input type="checkbox" checked={ownBranch} onChange={(e) => setOwnBranch(e.target.checked)} />
-            <Icon name="branch" size={13} /> Своя ветка
-          </label>
+          {!plain && (
+            <label class="branch-toggle" title="Агенты этого чата будут менять отдельную копию проекта на своей git-ветке, а в основную папку изменения попадут, когда вы их перенесёте">
+              <input type="checkbox" checked={ownBranch} onChange={(e) => setOwnBranch(e.target.checked)} />
+              <Icon name="branch" size={13} /> Своя ветка
+            </label>
+          )}
           <span class="muted">Модели:</span>
           <AgentChip
             agent="claude"

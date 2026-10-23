@@ -1,7 +1,7 @@
 {
   "name": "duocode",
   "productName": "DuoCode",
-  "version": "2.19.3",
+  "version": "2.20.0",
   "description": "Claude Code и Codex в одном приложении: общий чат, взаимные вызовы агентов и оба лимита",
   "main": "main.js",
   "private": true,

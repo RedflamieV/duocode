@@ -144,7 +144,8 @@ function rememberProject(dir) {
 }
 
 // Новый чат: в существующем проекте (projectId) или в папке (cwd), для которой проект заведётся сам.
-function createRoom({ projectId, cwd, title, settings: chosen }) {
+function createRoom({ projectId, cwd, title, settings: chosen, noProject = false }) {
+  if (noProject) return rooms.create({ title, chosen, noProject: true });
   let project = projectId && projects.get(settings, projectId);
   if (!project) project = rememberProject(cwd);
   else rememberProject(project.folders[0]);
@@ -675,8 +676,10 @@ async function botCommand({ name, args }) {
     }
     case 'new': {
       const list = projects.list(settings);
-      if (!list.length) return tg.say('Сначала создайте проект в DuoCode на компьютере.');
-      return tg.say('<b>В каком проекте?</b>', list.slice(0, 12).map((p) => [{ text: `${p.name}${p.folders.length > 1 ? ` · ${p.folders.length} папки` : ''}`, callback_data: `c|proj|${p.id}` }]));
+      return tg.say('<b>В каком проекте?</b>', [
+        [{ text: '💬 Без проекта — просто чат', callback_data: 'c|proj|none' }],
+        ...list.slice(0, 12).map((p) => [{ text: `${p.name}${p.folders.length > 1 ? ` · ${p.folders.length} папки` : ''}`, callback_data: `c|proj|${p.id}` }]),
+      ]);
     }
     case 'to':
       return tg.say(`Сейчас пишете: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>`, targetButtons());
@@ -804,15 +807,16 @@ async function botButton({ action, value, messageId }) {
   if (action === 'room' || action === 'proj') {
     let room;
     if (action === 'proj') {
-      if (!projects.get(settings, value)) return tg.say('Проект не найден');
-      room = createRoom({ projectId: value });
+      if (value === 'none') room = createRoom({ noProject: true });
+      else if (!projects.get(settings, value)) return tg.say('Проект не найден');
+      else room = createRoom({ projectId: value });
     } else room = rooms.get(value);
     if (!room) return tg.say('Чат не найден');
     setBot({ activeRoom: room.id });
     followed.set(room.id, Date.now() + 6 * 3600 * 1000);
     const last = [...room.messages].reverse().find((m) => m.role === 'agent' && !m.parentId && m.finalText);
     const tail = last ? `\n\nПоследний ответ ${last.agent === 'claude' ? 'Claude' : 'Codex'}:\n${quote(clip(last.finalText, 600))}` : '';
-    return tg.edit(messageId, `✅ Чат «<b>${esc(room.title)}</b>» (${esc(path.basename(room.cwd))}).\nПишите задачу — она уйдёт: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>.${tail}`, targetButtons());
+    return tg.edit(messageId, `✅ Чат «<b>${esc(room.title)}</b>» (${room.noProject ? 'без проекта' : esc(path.basename(room.cwd))}).\nПишите задачу — она уйдёт: <b>${TARGET_NAME[settings.telegram.target || 'both']}</b>.${tail}`, targetButtons());
   }
   if (action === 'to') {
     setBot({ target: value });
@@ -971,7 +975,7 @@ function setupRemote() {
       listRooms: () => rooms.list(),
       getRoom: (id) => rooms.get(id),
       // новые чаты — только в проектах, которые вы уже открывали в DuoCode на компьютере
-      createRoom: ({ projectId }) => (projects.get(settings, projectId) ? createRoom({ projectId }) : Promise.reject(new Error('Неизвестный проект'))),
+      createRoom: ({ projectId, noProject }) => (noProject ? createRoom({ noProject: true }) : projects.get(settings, projectId) ? createRoom({ projectId }) : Promise.reject(new Error('Неизвестный проект'))),
       setRoomSettings: (id, patch) => rooms.updateSettings(id, patch),
       renameRoom: (id, title) => rooms.rename(id, title),
       resend: (id, msgId) => rooms.resend(id, msgId),
@@ -1369,6 +1373,7 @@ app.whenReady().then(async () => {
     browser,
     terminals,
     store: new Store(path.join(userData, 'rooms')),
+    chatsDir: path.join(userData, 'chats'),
     runDir: path.join(userData, 'run'),
     bridge,
     codex,
@@ -1392,7 +1397,7 @@ app.whenReady().then(async () => {
   // чаты из версий без проектов: привязываем к проекту их папки
   let migrated = false;
   for (const r of rooms.rooms.values()) {
-    if (r.projectId || !r.cwd) continue;
+    if (r.projectId || r.noProject || !r.cwd) continue;
     const { project, created } = projects.forFolder(settings, r.cwd);
     r.projectId = project.id;
     rooms.store.save(r);

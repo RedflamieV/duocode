@@ -81,8 +81,9 @@ function systemPrompt(agent, settings, project) {
 }
 
 class Rooms extends EventEmitter {
-  constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, pickAgent, browser = null, terminals = null }) {
+  constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, chatsDir = null, pickAgent, browser = null, terminals = null }) {
     super();
+    this.chatsDir = chatsDir; // папки чатов без проекта
     this.continuations = new Map(); // id сообщения, поставленного на паузу -> его продолжение
     this.browser = browser;
     this.terminals = terminals;
@@ -252,6 +253,7 @@ class Rooms extends EventEmitter {
       workdir: room.worktree ? room.worktree.dir : room.cwd,
       branch: room.worktree ? room.worktree.branch : null,
       projectId: room.projectId || null,
+      noProject: !!room.noProject,
       updatedAt: room.updatedAt,
       settings: room.settings,
       context: room.context || {},
@@ -277,11 +279,19 @@ class Rooms extends EventEmitter {
   // ---------- Изменение ----------
 
   // chosen — модели и размышления, выбранные на экране нового чата (поверх значений из настроек)
-  create({ cwd, title, projectId = null, chosen = null }) {
+  create({ cwd, title, projectId = null, chosen = null, noProject = false }) {
     const now = Date.now();
     const defaults = this.getSettings().newChat || {};
+    const id = uid('room-');
+    // чат без проекта: у агентов своя пустая папка — для файлов, которые они создадут по ходу разговора
+    if (noProject) {
+      cwd = path.join(this.chatsDir, id);
+      fs.mkdirSync(cwd, { recursive: true });
+      projectId = null;
+    }
     const room = {
-      id: uid('room-'),
+      id,
+      noProject: noProject || undefined,
       title: title || 'Новый чат',
       cwd,
       projectId,
@@ -484,6 +494,10 @@ class Rooms extends EventEmitter {
     if (room && room.worktree) {
       const { dir, branch } = room.worktree;
       setTimeout(() => gitx.removeWorktree(room.cwd, dir).then(() => gitx.deleteBranch(room.cwd, branch)).catch(() => {}), 1500);
+    }
+    // у чата без проекта папка своя — удаляем вместе с ним
+    if (room && room.noProject && this.chatsDir && path.dirname(path.resolve(room.cwd)) === path.resolve(this.chatsDir)) {
+      fs.rm(room.cwd, { recursive: true, force: true }, () => {});
     }
     this.rooms.delete(id);
     this.store.remove(id);
@@ -1031,7 +1045,9 @@ class Rooms extends EventEmitter {
     const folders = projects.roomFolders(this.getSettings(), room);
     const projectNote = folders.extra.length
       ? `This project "${folders.project ? folders.project.name : path.basename(folders.main)}" spans several folders. Main (current working) folder: ${workDir}. Other project folders you can read and edit: ${folders.extra.join('; ')}.`
-      : '';
+      : room.noProject
+        ? `This is a general chat that is not tied to any project. The working folder ${workDir} is an empty scratch folder of this chat: put any files you create there unless the user names another place.`
+        : '';
 
     let resolveDone;
     const done = new Promise((r) => (resolveDone = r));

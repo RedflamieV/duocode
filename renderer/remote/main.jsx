@@ -113,7 +113,7 @@ function Limits({ limits }) {
 function Home({ rooms, limits, onOpen, onNew, projects = [] }) {
   const nameOf = (r) => {
     const p = projects.find((x) => x.id === r.projectId);
-    return p ? p.name : baseName(r.cwd);
+    return r.noProject ? 'без проекта' : p ? p.name : baseName(r.cwd);
   };
   return (
     <div class="m-screen">
@@ -152,15 +152,24 @@ function NewChat({ onCreated }) {
   }, []);
   const create = async (projectId) => {
     haptic();
-    const room = await duo.createRoom({ projectId });
+    const room = await duo.createRoom(projectId ? { projectId } : { noProject: true });
     onCreated(room.id);
   };
   return (
     <div class="m-screen">
+      <div class="m-list">
+        <button class="m-room" onClick={() => create(null)}>
+          <span class="m-room-main">
+            <b>Без проекта — просто чат</b>
+            <small>Вопросы, идеи, разовые задачи</small>
+          </span>
+          <Icon name="right" size={16} />
+        </button>
+      </div>
       <div class="section pad">Проект</div>
       <div class="m-list">
         {!projects && <div class="muted pad">Загрузка…</div>}
-        {projects && projects.length === 0 && <div class="muted pad">Сначала создайте проект в DuoCode на компьютере.</div>}
+        {projects && projects.length === 0 && <div class="muted pad">Проектов пока нет — их создают в DuoCode на компьютере.</div>}
         {(projects || []).map((p) => (
           <button key={p.id} class="m-room" onClick={() => create(p.id)}>
             <span class="m-room-main">
@@ -314,7 +323,7 @@ function Room({ room, onLocal }) {
             </span>
           )}
           <small>
-            <Icon name="folder" size={12} /> {baseName(room.cwd)}
+            <Icon name={room.noProject ? 'chat' : 'folder'} size={12} /> {room.noProject ? 'без проекта' : baseName(room.cwd)}
           </small>
         </div>
         <label class="select">
