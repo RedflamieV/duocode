@@ -612,7 +612,7 @@ export function StatsModal({ onClose, onOpenRoom }) {
   const chats = ((stats && stats.chats) || []).filter((c) => c.claude + c.codex > 0).sort((a, b) => b.claude + b.codex - (a.claude + a.codex));
 
   return (
-    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div class="modal-back">
       <div class="modal stats-modal">
         <div class="modal-head">
           <h2>Статистика</h2>

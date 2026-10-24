@@ -980,7 +980,7 @@ function BudgetModal({ room, onClose }) {
     onClose();
   };
   return (
-    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div class="modal-back">
       <div class="modal small-modal">
         <div class="modal-head">
           <h2>Бюджет чата</h2>
@@ -1448,7 +1448,7 @@ export function ProjectEditor({ project, onClose, onSaved }) {
     }
   };
   return (
-    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div class="modal-back">
       <div class="modal">
         <div class="modal-head">
           <h2>{project.id ? 'Проект' : 'Новый проект'}</h2>
@@ -2241,7 +2241,7 @@ function ScheduleEditor({ item, projects, onClose }) {
     onClose();
   };
   return (
-    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div class="modal-back">
       <div class="modal">
         <div class="modal-head">
           <h2>{item.id ? 'Задача по расписанию' : 'Новая задача по расписанию'}</h2>
@@ -2437,7 +2437,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
   const [tab, setTab] = useState('look');
   const prefs = { ...DEFAULT_PREFS, ...(settings.appearance || {}) };
   return (
-    <div class="modal-back" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div class="modal-back">
       <div class="modal settings-modal">
         <div class="modal-head">
           <h2>Настройки</h2>
