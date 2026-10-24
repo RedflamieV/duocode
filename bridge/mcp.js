@@ -190,24 +190,42 @@ rl.on('line', async (line) => {
 rl.on('close', () => process.exit(0));
 
 // Сторож: если DuoCode закрылся аварийно (снят из диспетчера задач, выключили питание), Windows не завершает
-// запущенных им агентов. Мост живёт внутри агента, поэтому, не достучавшись до DuoCode дважды подряд,
-// останавливает своего агента — чтобы тот не продолжал менять файлы без присмотра.
-let misses = 0;
+// запущенных им агентов. Мост живёт внутри агента, поэтому, когда DuoCode точно нет, он останавливает
+// своего агента — чтобы тот не продолжал менять файлы без присмотра.
+// «Точно нет» — процесса DuoCode больше не существует. Не ответил вовремя — не повод: DuoCode мог быть
+// занят (большой чат, сохранение), и раньше сторож в такие секунды убивал живых агентов (код 1 на Windows).
+const DUO_PID = Number(process.env.DUO_PID) || 0;
+function duoGone() {
+  try {
+    process.kill(DUO_PID, 0); // сигнал 0 ничего не делает, только проверяет, что процесс есть
+    return false;
+  } catch (err) {
+    return err.code === 'ESRCH';
+  }
+}
+let refused = 0;
 const watchdog = setInterval(() => {
+  if (DUO_PID) {
+    if (!duoGone()) return;
+    return stopAgent();
+  }
+  // старый DuoCode без DUO_PID: только «соединение отклонено» (порт закрыт — процесса нет), три раза подряд
   const req = http.request({ host: '127.0.0.1', port: PORT, method: 'GET', path: '/alive', timeout: 3000 }, (res) => {
     res.resume();
-    misses = 0;
+    refused = 0;
   });
   req.on('timeout', () => req.destroy());
   req.on('error', (err) => {
-    if (err.code !== 'ECONNREFUSED' && err.code !== 'ECONNRESET') return;
-    if (++misses < 2) return;
-    clearInterval(watchdog);
-    try {
-      process.kill(process.ppid);
-    } catch {}
-    process.exit(0);
+    if (err.code !== 'ECONNREFUSED') return;
+    if (++refused >= 3) stopAgent();
   });
   req.end();
 }, 5000);
+function stopAgent() {
+  clearInterval(watchdog);
+  try {
+    process.kill(process.ppid);
+  } catch {}
+  process.exit(0);
+}
 watchdog.unref();

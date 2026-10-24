@@ -1145,6 +1145,7 @@ class Rooms extends EventEmitter {
         ELECTRON_RUN_AS_NODE: '1',
         DUO_PORT: String(this.bridge.port),
         DUO_TOKEN: this.bridge.token,
+        DUO_PID: String(process.pid), // по нему сторож моста видит, жив ли DuoCode
         DUO_ROOM: room.id,
         DUO_BROWSER: settings.general.browser === false ? '0' : '1',
       };
