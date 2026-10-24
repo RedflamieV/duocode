@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
-const { spawnTool } = require('../env');
+const { spawnTool, isWin } = require('../env');
 const { clip, simpleDiff, killTree } = require('./util');
 
 // Эти вызовы DuoCode показывает своими карточками (вопрос, план) или не показывает вовсе.
@@ -278,11 +278,17 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
     stderr = (stderr + c).slice(-4000);
   });
   proc.on('error', (err) => finish({ text: '', error: err.message }));
-  proc.on('close', (code) => {
+  proc.on('close', (code, signal) => {
     clearTimeout(closeTimer);
     if (ev.stopped) finish({ text: lastText, error: null, stopped: true, cost });
     else {
-      const r = result || { text: lastText, error: code ? stderr.trim() || `Claude завершился с кодом ${code}` : null };
+      let r = result;
+      if (!r && (code || signal)) {
+        // процесс закрылся посреди хода, не дойдя до итога, — DuoCode перезапустит его и попросит продолжить
+        const said = stderr.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        const outside = !said && (signal || (isWin && code === 1)) ? ' Похоже, его процесс завершили извне — например, командой, останавливающей все процессы Node.' : '';
+        r = { text: lastText, error: `Claude Code неожиданно завершился (${signal ? `сигнал ${signal}` : `код ${code}`}).${said ? ` ${clip(said, 400)}` : outside}`, crashed: true, cost };
+      } else if (!r) r = { text: lastText, error: null };
       // сессии нет на диске: Claude Code сам удаляет старые (cleanupPeriodDays, по умолчанию 30 дней)
       if (r.error && sessionId && /No conversation found/i.test(stderr + r.error)) r.lost = true;
       finish(r);

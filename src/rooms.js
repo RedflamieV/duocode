@@ -1100,8 +1100,8 @@ class Rooms extends EventEmitter {
       this.runs.delete(msg.id);
       this.markDirty(room, msg);
       // процесс агента упал посреди хода (Codex app-server) — поднимаем заново и просим продолжить.
-      // Один раз на задачу: если падает снова, значит, дело не в случайном сбое.
-      if (r.crashed && !run.pauseRequested && !opts.crashRetry && !isolated && !fork && !action && !parentId && this.main.get(key) === msg.id) {
+      // Не больше трёх раз подряд на задачу: если падает и дальше, дело не в случайном сбое.
+      if (r.crashed && !r.lost && !run.pauseRequested && (opts.crashRetry || 0) < 3 && !isolated && !fork && !action && !parentId && this.main.get(key) === msg.id) {
         this.main.delete(key);
         const killer = this.killerCommand(msg);
         msg.error = `${r.error}${killer ? ` В этот момент ${NAME[killer.agent]} выполнял команду \`${short(killer.command, 160)}\` — скорее всего, она и завершила процесс.` : ''} DuoCode перезапустил ${NAME[agent]} — продолжение ниже.`;
@@ -1112,7 +1112,7 @@ class Rooms extends EventEmitter {
         const next = this.runAgent(room, agent, {
           prompt: 'Твой процесс неожиданно завершился посреди работы, DuoCode перезапустил его. Продолжи задачу с того места, где остановился: сначала проверь, что уже успел сделать (некоторые правки могли не примениться).',
           pipeline,
-          crashRetry: true,
+          crashRetry: (opts.crashRetry || 0) + 1,
         });
         next.done.then(resolveDone);
         return;
