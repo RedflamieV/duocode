@@ -2,7 +2,7 @@ import './shim.js';
 import { render } from 'preact';
 import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
 import { Icon, Avatar } from '../src/icons.jsx';
-import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf } from '../src/messages.jsx';
+import { StableAgentMessage as AgentMessage, StableUserMessage as UserMessage, SystemMessage, DuelCard, NAME, peerOf } from '../src/messages.jsx';
 import { PrefsContext, DEFAULT_PREFS } from '../src/prefs.js';
 import { TitleInput } from '../src/titleinput.jsx';
 import { Lightbox } from '../src/attachments.jsx';

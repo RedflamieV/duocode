@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, useContext } from 'p
 import { PrefsContext, DEFAULT_PREFS, applyPrefs } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
 import { Attachments, Lightbox } from './attachments.jsx';
-import { AgentMessage, UserMessage, SystemMessage, DuelCard, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
+import { StableAgentMessage as AgentMessage, StableUserMessage as UserMessage, SystemMessage, DuelCard, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
 import { TitleInput } from './titleinput.jsx';
 import { SidePanel, StatsModal } from './panels.jsx';
 
@@ -51,6 +51,7 @@ const TARGETS = [
 
 const IMG = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const NO_PROJECT = '__chat'; // «проект» нового чата: без проекта
+const SHOW_STEP = 80; // сколько сообщений ленты рисовать за раз
 
 // Claude и Codex, работавшие одновременно, идут рядом (Claude слева, Codex справа), а не друг под другом:
 // иначе размышления каждого уводят ленту вниз. По очереди или один агент — как обычно, по центру.
@@ -1252,6 +1253,10 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
   }, [room.cwd]);
   const top = room.messages.filter((m) => !m.parentId);
   const running = room.running && (room.running.claude || room.running.codex);
+  // длинный чат рисуем с конца: последние SHOW_STEP, остальное — по кнопке «Показать ранние»
+  const items = threadItems(top);
+  const [shown, setShown] = useState(SHOW_STEP);
+  const from = Math.max(0, items.length - shown);
   const [scrollRef, innerRef, onScroll, stickNow] = useStickyScroll();
   // ширина ленты — для колонок Claude и Codex (см. .pair в styles.css)
   useEffect(() => {
@@ -1266,13 +1271,24 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
   }, []);
   useEffect(() => {
     if (!highlight) return;
+    // сообщение из поиска может быть среди нераскрытых ранних — раскрываем до него
+    let root = byId.get(highlight);
+    while (root && root.parentId && byId.get(root.parentId)) root = byId.get(root.parentId);
+    const idx = root ? items.findIndex((it) => (it.pair ? it.pair.includes(root) : it === root)) : -1;
+    if (idx >= 0 && idx < from) return setShown(items.length - idx + 5);
     const el = document.querySelector(`[data-msg="${highlight}"]`);
     if (el) {
       el.scrollIntoView({ block: 'center' });
       el.classList.add('flash');
       setTimeout(() => el.classList.remove('flash'), 1600);
     }
-  }, [highlight]);
+  }, [highlight, from]);
+  const showEarlier = () => {
+    const el = scrollRef.current;
+    const fromBottom = el.scrollHeight - el.scrollTop;
+    setShown((n) => n + SHOW_STEP);
+    requestAnimationFrame(() => (el.scrollTop = el.scrollHeight - fromBottom));
+  };
 
   const send = (text, agents, opts = {}) => {
     stickNow();
@@ -1309,7 +1325,12 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
               </p>
             </div>
           )}
-          {threadItems(top).map((m) =>
+          {from > 0 && (
+            <button class="btn show-earlier" onClick={showEarlier}>
+              Показать ранние сообщения ({from})
+            </button>
+          )}
+          {items.slice(from).map((m) =>
             m.pair ? (
               <div class="pair" key={m.pair[0].id + m.pair[1].id}>
                 {m.pair.map((x) => (

@@ -1651,3 +1651,4 @@ body.remote .user-actions { opacity: 1; }
 .pair > [data-msg] { min-width: 0; }
 .thread > .pair:nth-last-child(-n+3) .msg { animation: rise var(--m-med) var(--m-ease) backwards; }
 .scroll.narrow .pair { display: block; width: auto; margin-left: 0; }
+.show-earlier { display: block; margin: 0 auto 22px; }

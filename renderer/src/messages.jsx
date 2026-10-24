@@ -1,3 +1,4 @@
+import { Component } from 'preact';
 import { useState, useMemo, useContext } from 'preact/hooks';
 import { PrefsContext } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
@@ -723,6 +724,41 @@ function EditUserMessage({ msg, room, onDone }) {
       </div>
     </div>
   );
+}
+
+// Ленту перерисовываем точечно: сообщение — только если изменилось оно само или вложенный в него ход
+// другого агента. Иначе каждое обновление идущего ответа (несколько раз в секунду) перерисовывало бы
+// весь длинный чат. Новое сообщение в чате (меняется длина) — повод перерисовать всё: от него зависят
+// пометки «продолжен ниже» и кнопки отката.
+function sameTree(msg, a, b) {
+  for (const p of msg.parts || []) {
+    if (!p.childId) continue;
+    const x = a.get(p.childId);
+    const y = b.get(p.childId);
+    if (x !== y || (y && !sameTree(y, a, b))) return false;
+  }
+  return true;
+}
+const roomChanged = (a, b) => a.room !== b.room && (!a.room || !b.room || a.room.id !== b.room.id || a.room.cwd !== b.room.cwd || a.room.messages.length !== b.room.messages.length);
+
+export class StableAgentMessage extends Component {
+  shouldComponentUpdate(n) {
+    const o = this.props;
+    return n.msg !== o.msg || roomChanged(o, n) || !sameTree(n.msg, o.byId, n.byId);
+  }
+  render(p) {
+    return <AgentMessage {...p} />;
+  }
+}
+
+export class StableUserMessage extends Component {
+  shouldComponentUpdate(n) {
+    const o = this.props;
+    return n.msg !== o.msg || n.roomId !== o.roomId || roomChanged(o, n);
+  }
+  render(p) {
+    return <UserMessage {...p} />;
+  }
 }
 
 export function UserMessage({ msg, roomId, room }) {

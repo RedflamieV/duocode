@@ -11,7 +11,7 @@ const { CodexServer } = require('./src/agents/codex');
 const { slimRoom, slimMessage } = require('./src/slim');
 const { getClaudeLimits } = require('./src/claudeLimits');
 const { getCodexLimits, parseRateLimits } = require('./src/codexLimits');
-const { allSessions, claudeToday, codexToday, dailyUsage } = require('./src/history');
+const { Logs } = require('./src/logs');
 const { listCommands } = require('./src/commands');
 const gitx = require('./src/git');
 const { searchFiles } = require('./src/files');
@@ -212,6 +212,7 @@ let rooms;
 let browser = null;
 const terminals = new Terminals();
 let codex;
+let logs; // журналы Claude Code и Codex: расход токенов, сессии из терминала
 let tray = null;
 const tg = new Telegram();
 let remote = null;
@@ -369,17 +370,17 @@ async function refreshClaudeLimits(force = false) {
 }
 
 async function refreshCodexLimits() {
-  limits.codex = await getCodexLimits(codex).catch((err) => ({ ok: false, error: err.message }));
+  limits.codex = await getCodexLimits(codex, logs).catch((err) => ({ ok: false, error: err.message }));
   sendLimits();
 }
 
+// токены за сегодня — из журналов агентов; читаются в фоне и только дописанное с прошлого раза
 function refreshToday() {
-  try {
-    limits.today = { claude: claudeToday(), codex: codexToday() };
-  } catch {
-    limits.today = null;
-  }
-  sendLimits();
+  return logs
+    .today()
+    .then((t) => (limits.today = t))
+    .catch(() => (limits.today = null))
+    .then(sendLimits);
 }
 
 async function refreshAllLimits(force = false) {
@@ -1188,11 +1189,11 @@ function bindIpc() {
   ipcMain.handle('limits:get', () => limits);
   ipcMain.handle('limits:refresh', () => refreshAllLimits(true).then(() => limits));
   // сессии из терминала, кроме тех, что уже ведёт DuoCode, и временных копий проекта
-  ipcMain.handle('history:get', () => {
+  ipcMain.handle('history:get', async () => {
     const own = new Set();
     for (const r of rooms.rooms.values()) for (const id of Object.values(r.sessions || {})) if (id) own.add(id);
     const worktrees = path.join(app.getPath('userData'), 'worktrees');
-    return allSessions()
+    return (await logs.sessions())
       .filter((s) => !own.has(s.id) && !(s.cwd || '').startsWith(worktrees) && !/^\s*(<duocode_|\[(Запрос от|Режим сравнения|Режим планирования))/.test(s.title))
       .slice(0, 60);
   });
@@ -1299,7 +1300,7 @@ function bindIpc() {
   ipcMain.handle('memory:set', (_e, cwd, text) => memory.write(cwd, text));
 
   // статистика
-  ipcMain.handle('stats:get', async () => ({ daily: await dailyUsage(14), chats: chatStats() }));
+  ipcMain.handle('stats:get', async () => ({ daily: await logs.daily(14), chats: chatStats() }));
 
   // Telegram
   ipcMain.handle('telegram:status', () => ({ status: tg.status, bot: tg.bot, chatId: tg.chatId }));
@@ -1363,6 +1364,7 @@ app.whenReady().then(async () => {
   loadSettings();
   const userData = app.getPath('userData');
   codex = new CodexServer(() => settings.codexCommand);
+  logs = new Logs(path.join(userData, 'logs-index.json'));
   const bridge = await startBridge(() => rooms);
   // встроенный браузер для агентов (вкладка «Браузер» боковой панели)
   browser = new AgentBrowser({ getWindow: () => win, shotDir: path.join(userData, 'browser') });
