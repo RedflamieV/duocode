@@ -281,7 +281,7 @@ function Composer({ room, onLocal }) {
   );
 }
 
-function Room({ room, onLocal }) {
+function Room({ room, onLocal, onMore, onRetry }) {
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState(null); // новое название, пока сервер не подтвердил
   useEffect(() => setTitle(null), [room.title]);
@@ -297,6 +297,16 @@ function Room({ room, onLocal }) {
     el.scrollTop = el.scrollHeight;
     return () => ro.disconnect();
   }, []);
+  // ранние сообщения добавляются сверху — удерживаем на месте то, что сейчас на экране
+  const [more, setMore] = useState(false);
+  const showMore = async () => {
+    const el = scroll.current;
+    const fromBottom = el.scrollHeight - el.scrollTop;
+    stick.current = false;
+    setMore(true);
+    await onMore().finally(() => setMore(false));
+    requestAnimationFrame(() => (el.scrollTop = el.scrollHeight - fromBottom));
+  };
   const review = (msg) =>
     duo.send(room.id, {
       text: `Проверь последний ответ ${NAME[msg.agent]} выше: найди ошибки и слабые места, предложи улучшения. Если всё хорошо — так и скажи.`,
@@ -346,7 +356,21 @@ function Room({ room, onLocal }) {
         }}
       >
         <div class="thread" ref={inner}>
-          {top.length === 0 && <div class="thread-empty">Напишите задачу — Claude и Codex сделают её на вашем компьютере.</div>}
+          {room.loading && <div class="thread-empty">Загрузка чата…</div>}
+          {room.loadError && (
+            <div class="thread-empty">
+              Не удалось загрузить чат: {room.loadError}
+              <button class="btn" onClick={onRetry}>
+                Повторить
+              </button>
+            </div>
+          )}
+          {room.older > 0 && (
+            <button class="btn m-older" disabled={more} onClick={showMore}>
+              {more ? 'Загрузка…' : `Показать ранние сообщения (${room.older})`}
+            </button>
+          )}
+          {top.length === 0 && !room.loading && !room.loadError && <div class="thread-empty">Напишите задачу — Claude и Codex сделают её на вашем компьютере.</div>}
           {top.map((m) =>
             m.role === 'user' ? (
               <UserMessage msg={m} key={m.id} roomId={room.id} room={room} />
@@ -376,11 +400,31 @@ function App() {
   const [error, setError] = useState(null);
   const [projects, setProjects] = useState([]);
   const current = useRef(null);
+  const limit = useRef(40); // сколько последних сообщений чата загружено
 
+  // Экран чата открываем сразу (шапка — из списка чатов), сообщения подгружаются следом.
   const openRoom = async (id) => {
     current.current = id;
-    setRoom(await duo.getRoom(id));
-    setScreen('room');
+    limit.current = 40;
+    const known = rooms.find((r) => r.id === id);
+    if (known) {
+      setRoom({ ...known, messages: [], loading: true });
+      setScreen('room');
+    }
+    try {
+      const r = await duo.getRoom(id, limit.current);
+      if (current.current !== id) return;
+      setRoom(r);
+      setScreen('room');
+    } catch (err) {
+      if (current.current === id && known) setRoom((r) => (r && r.id === id ? { ...r, loading: false, loadError: err.message } : r));
+    }
+  };
+  const loadMore = async () => {
+    const id = current.current;
+    limit.current += 60;
+    const r = await duo.getRoom(id, limit.current);
+    if (current.current === id) setRoom(r);
   };
 
   useEffect(() => {
@@ -426,7 +470,7 @@ function App() {
   // и переподключение, когда приложение снова на экране.
   const sync = async () => {
     const id = current.current;
-    const [list, r] = await Promise.all([duo.listRooms(), id ? duo.getRoom(id) : null]).catch(() => [null, null]);
+    const [list, r] = await Promise.all([duo.listRooms(), id ? duo.getRoom(id, limit.current) : null]).catch(() => [null, null]);
     if (list) setRooms(list);
     if (r && current.current === r.id) setRoom(r);
   };
@@ -480,7 +524,7 @@ function App() {
         {status === 'offline' && <div class="m-offline">Нет связи с компьютером — переподключаюсь…</div>}
         {screen === 'home' && <Home rooms={[...rooms.filter((r) => r.pinned && !r.archived), ...rooms.filter((r) => !r.pinned && !r.archived)]} limits={limits} projects={projects} onOpen={openRoom} onNew={() => setScreen('new')} />}
         {screen === 'new' && <NewChat onCreated={openRoom} />}
-        {screen === 'room' && room && <Room room={room} key={room.id} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
+        {screen === 'room' && room && <Room room={room} key={room.id} onMore={loadMore} onRetry={() => openRoom(room.id)} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
       </div>
     </PrefsContext.Provider>
   );

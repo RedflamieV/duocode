@@ -85,3 +85,5 @@ body.remote .codeblock pre { font-size: 12px; }
 
 .m-error { height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: var(--muted); }
 .m-error b { color: var(--text); font-size: 17px; }
+.m-older { display: block; margin: 4px auto 14px; }
+.thread-empty .btn { display: block; margin: 10px auto 0; }

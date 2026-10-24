@@ -52,6 +52,22 @@ const TARGETS = [
 const IMG = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const NO_PROJECT = '__chat'; // «проект» нового чата: без проекта
 
+// Claude и Codex, работавшие одновременно, идут рядом (Claude слева, Codex справа), а не друг под другом:
+// иначе размышления каждого уводят ленту вниз. По очереди или один агент — как обычно, по центру.
+function threadItems(top) {
+  const together = (a, b) => b.ts - a.ts < 3000 || a.status === 'running' || (a.finishedAt && b.ts < a.finishedAt);
+  const out = [];
+  for (let i = 0; i < top.length; i++) {
+    const a = top[i];
+    const b = top[i + 1];
+    if (a.role === 'agent' && b && b.role === 'agent' && a.agent !== b.agent && together(a, b)) {
+      out.push({ pair: a.agent === 'claude' ? [a, b] : [b, a] });
+      i++;
+    } else out.push(a);
+  }
+  return out;
+}
+
 function store(key, value) {
   try {
     if (value === undefined) return localStorage.getItem(key);
@@ -1237,6 +1253,17 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
   const top = room.messages.filter((m) => !m.parentId);
   const running = room.running && (room.running.claude || room.running.codex);
   const [scrollRef, innerRef, onScroll, stickNow] = useStickyScroll();
+  // ширина ленты — для колонок Claude и Codex (см. .pair в styles.css)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      el.style.setProperty('--scroll-w', `${el.clientWidth}px`);
+      el.classList.toggle('narrow', el.clientWidth < 980);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   useEffect(() => {
     if (!highlight) return;
     const el = document.querySelector(`[data-msg="${highlight}"]`);
@@ -1282,8 +1309,16 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
               </p>
             </div>
           )}
-          {top.map((m) =>
-            m.role === 'user' ? (
+          {threadItems(top).map((m) =>
+            m.pair ? (
+              <div class="pair" key={m.pair[0].id + m.pair[1].id}>
+                {m.pair.map((x) => (
+                  <div data-msg={x.id} key={x.id}>
+                    <AgentMessage msg={x} room={room} byId={byId} onReview={review} />
+                  </div>
+                ))}
+              </div>
+            ) : m.role === 'user' ? (
               <div data-msg={m.id} key={m.id}>
                 <UserMessage msg={m} roomId={room.id} room={room} />
               </div>

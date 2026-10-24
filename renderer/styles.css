@@ -1635,3 +1635,19 @@ body.remote .user-actions { opacity: 1; }
 .paused-bar { display: flex; align-items: center; gap: 10px; margin: -2px 0 8px; padding: 7px 10px; border-radius: 9px; background: var(--warn-soft); color: var(--text); font-size: 12.5px; }
 .paused-bar span { flex: 1; min-width: 0; }
 .paused-meta { color: var(--warn); }
+
+/* Claude и Codex одновременно — две колонки шире обычной ленты (по ширине окна, до 1400px).
+   Ширину ленты (--scroll-w) и класс narrow ставит RoomView: container-type здесь нельзя —
+   он ломает окна с position: fixed внутри сообщений (просмотр картинок). */
+.pair {
+  --pair-w: min(1400px, var(--scroll-w, 860px) - 56px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  align-items: start;
+  width: var(--pair-w);
+  margin-left: calc((100% - var(--pair-w)) / 2);
+}
+.pair > [data-msg] { min-width: 0; }
+.thread > .pair:nth-last-child(-n+3) .msg { animation: rise var(--m-med) var(--m-ease) backwards; }
+.scroll.narrow .pair { display: block; width: auto; margin-left: 0; }

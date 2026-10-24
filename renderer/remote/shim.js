@@ -80,7 +80,7 @@ const on = (ev) => (cb) => {
 
 window.duo = {
   listRooms: () => rpc('listRooms'),
-  getRoom: (id) => rpc('getRoom', id),
+  getRoom: (id, limit) => rpc('getRoom', id, limit),
   createRoom: (opts) => act('createRoom', opts),
   setRoomSettings: (id, patch) => act('setRoomSettings', id, patch),
   renameRoom: (id, title) => act('renameRoom', id, title),

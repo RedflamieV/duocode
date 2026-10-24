@@ -8,6 +8,7 @@ const { fixPath, resolveCommand, isWin, spawnTool } = require('./src/env');
 const { Store } = require('./src/store');
 const { Rooms } = require('./src/rooms');
 const { CodexServer } = require('./src/agents/codex');
+const { slimRoom, slimMessage } = require('./src/slim');
 const { getClaudeLimits } = require('./src/claudeLimits');
 const { getCodexLimits, parseRateLimits } = require('./src/codexLimits');
 const { allSessions, claudeToday, codexToday, dailyUsage } = require('./src/history');
@@ -973,7 +974,7 @@ function setupRemote() {
     getAuth: () => ({ token: settings.telegram.token, userId: settings.telegram.userId }),
     api: {
       listRooms: () => rooms.list(),
-      getRoom: (id) => rooms.get(id),
+      getRoom: (id, limit) => slimRoom(rooms.get(id), limit),
       // новые чаты — только в проектах, которые вы уже открывали в DuoCode на компьютере
       createRoom: ({ projectId, noProject }) => (noProject ? createRoom({ noProject: true }) : projects.get(settings, projectId) ? createRoom({ projectId }) : Promise.reject(new Error('Неизвестный проект'))),
       setRoomSettings: (id, patch) => rooms.updateSettings(id, patch),
@@ -1009,7 +1010,7 @@ function setupRemote() {
   });
   // после сна соединения туннеля мертвы — поднимаем заново
   powerMonitor.on('resume', () => setTimeout(() => tunnel.restart('компьютер вышел из сна'), 5000));
-  rooms.on('messages', (roomId, msgs) => remote.broadcast('messages', { roomId, msgs }));
+  rooms.on('messages', (roomId, msgs) => remote.broadcast('messages', { roomId, msgs: msgs.map(slimMessage) }));
   rooms.on('rooms', (list) => remote.broadcast('rooms', list));
   applyRemote();
 }

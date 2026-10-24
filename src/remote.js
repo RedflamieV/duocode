@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const net = require('net');
+const zlib = require('zlib');
 
 // Свободный локальный порт (для адреса состояния cloudflared).
 const freePort = () =>
@@ -103,19 +104,32 @@ class RemoteServer extends EventEmitter {
     this.server = null;
   }
 
-  json(res, code, body) {
-    res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify(body));
+  // Ответ сжимаем, если клиент умеет: через туннель JSON чата и скрипт интерфейса идут в разы быстрее.
+  send(res, code, headers, data) {
+    if (res.gzip && data.length > 1024) {
+      data = zlib.gzipSync(data, { level: 6 });
+      headers = { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' };
+    }
+    res.writeHead(code, { ...headers, 'Content-Length': data.length });
+    res.end(data);
   }
 
-  file(res, name, type) {
+  json(res, code, body) {
+    this.send(res, code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, Buffer.from(JSON.stringify(body)));
+  }
+
+  // Интерфейс: с ETag повторное открытие мини-приложения не качает скрипт заново, если он не менялся.
+  file(req, res, name, type) {
+    let data;
     try {
-      const data = fs.readFileSync(path.join(this.root, name));
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
-      res.end(data);
+      data = fs.readFileSync(path.join(this.root, name));
     } catch {
-      res.writeHead(404).end();
+      return res.writeHead(404).end();
     }
+    const etag = `"${crypto.createHash('sha1').update(data).digest('base64url')}"`;
+    const headers = { 'Content-Type': type, 'Cache-Control': 'no-cache', ETag: etag };
+    if (req.headers['if-none-match'] === etag) return res.writeHead(304, headers).end();
+    this.send(res, 200, headers, data);
   }
 
   auth(initData) {
@@ -125,11 +139,12 @@ class RemoteServer extends EventEmitter {
 
   async route(req, res) {
     const url = new URL(req.url, 'http://localhost');
+    res.gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
     // сам интерфейс публичный: в нём нет данных, данные отдаёт только API после проверки подписи
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return this.file(res, 'remote.html', 'text/html; charset=utf-8');
-    if (req.method === 'GET' && url.pathname === '/remote.js') return this.file(res, 'dist/remote.js', 'text/javascript; charset=utf-8');
-    if (req.method === 'GET' && url.pathname === '/styles.css') return this.file(res, 'styles.css', 'text/css; charset=utf-8');
-    if (req.method === 'GET' && url.pathname === '/remote.css') return this.file(res, 'remote.css', 'text/css; charset=utf-8');
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return this.file(req, res, 'remote.html', 'text/html; charset=utf-8');
+    if (req.method === 'GET' && url.pathname === '/remote.js') return this.file(req, res, 'dist/remote.js', 'text/javascript; charset=utf-8');
+    if (req.method === 'GET' && url.pathname === '/styles.css') return this.file(req, res, 'styles.css', 'text/css; charset=utf-8');
+    if (req.method === 'GET' && url.pathname === '/remote.css') return this.file(req, res, 'remote.css', 'text/css; charset=utf-8');
 
     if (req.method === 'GET' && url.pathname === '/api/events') {
       if (!this.checkPass(url.searchParams.get('pass'))) return this.json(res, 401, { error: 'Нет доступа' });
