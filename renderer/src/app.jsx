@@ -6,6 +6,7 @@ import { Attachments, Lightbox } from './attachments.jsx';
 import { StableAgentMessage as AgentMessage, StableUserMessage as UserMessage, SystemMessage, DuelCard, NAME, peerOf, EFFORT_NAME } from './messages.jsx';
 import { TitleInput } from './titleinput.jsx';
 import { SidePanel, StatsModal } from './panels.jsx';
+import { ThemePicker, ThemeBackdrop } from './themes.jsx';
 import { GitHubPanel, GitHubModal } from './github.jsx';
 
 const duo = window.duo;
@@ -1746,16 +1747,6 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
 
 // ---------- Настройки ----------
 
-const THEMES = [
-  { id: 'system', name: 'Как в системе', swatch: ['#141519', '#f4f4f2'] },
-  { id: 'dark', name: 'Тёмная', swatch: ['#141519', '#1d1f25'] },
-  { id: 'light', name: 'Светлая', swatch: ['#f4f4f2', '#ffffff'] },
-  { id: 'midnight', name: 'Полночь', swatch: ['#0d1117', '#161b22'] },
-  { id: 'graphite', name: 'Графит', swatch: ['#1e1e1e', '#2a2a2b'] },
-  { id: 'sepia', name: 'Сепия', swatch: ['#f5efe3', '#fbf7ef'] },
-  { id: 'paper', name: 'Бумага', swatch: ['#ffffff', '#f7f7f7'] },
-];
-
 function Segmented({ value, options, onChange }) {
   return (
     <div class="segmented wide">
@@ -1785,20 +1776,7 @@ function AppearanceTab({ prefs }) {
   const set = (patch) => duo.setSettings({ appearance: patch });
   return (
     <div class="tab-body">
-      <div class="field">
-        <label>Тема</label>
-        <div class="themes">
-          {THEMES.map((t) => (
-            <button key={t.id} class={`theme-card ${prefs.theme === t.id ? 'active' : ''}`} onClick={() => set({ theme: t.id })}>
-              <span class="theme-swatch" style={{ background: `linear-gradient(135deg, ${t.swatch[0]} 50%, ${t.swatch[1]} 50%)` }}>
-                <i class="claude" />
-                <i class="codex" />
-              </span>
-              {t.name}
-            </button>
-          ))}
-        </div>
-      </div>
+      <ThemePicker value={prefs.theme} onChange={(theme) => set({ theme })} />
       <div class="field">
         <label>Размер текста</label>
         <Segmented value={prefs.fontSize} onChange={(v) => set({ fontSize: v })} options={[{ id: 13, name: 'Мелкий' }, { id: 14, name: 'Обычный' }, { id: 15, name: 'Крупный' }, { id: 16, name: 'Очень крупный' }]} />
@@ -2637,6 +2615,7 @@ function App() {
     <PrefsContext.Provider value={prefs}>
     <Lightbox />
     <div class={`app platform-${duo.platform}`}>
+      <ThemeBackdrop theme={prefs.theme} />
       <Sidebar
         rooms={rooms}
         currentId={currentId}
