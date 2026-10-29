@@ -7,6 +7,7 @@ import { StableAgentMessage as AgentMessage, StableUserMessage as UserMessage, S
 import { TitleInput } from './titleinput.jsx';
 import { SidePanel, StatsModal } from './panels.jsx';
 import { ThemePicker, ThemeBackdrop } from './themes.jsx';
+import { GitHubPanel, GitHubModal } from './github.jsx';
 
 const duo = window.duo;
 const baseName = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '');
@@ -205,8 +206,12 @@ function UpdateBanner({ update }) {
   );
 }
 
-function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEditProject, onDeleteRoom, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
+function Sidebar({ rooms, projects = [], projectOrder = [], currentId, onOpen, onNew, onNewIn, onEditProject, onGitHub, onDeleteRoom, limits, onRefreshLimits, refreshing, onSettings, onStats, env, update }) {
   const [renaming, setRenaming] = useState(null); // id чата, который переименовывают
+  const [dragging, setDragging] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null);
+  const [ordering, setOrdering] = useState(false);
+  const [orderError, setOrderError] = useState('');
   const [ctx, setCtx] = useState(null); // контекстное меню чата: { id, x, y }
   useEffect(() => {
     if (!ctx) return;
@@ -266,8 +271,27 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
     if (!needle) for (const p of projects) if (!map.has(p.id)) map.set(p.id, { key: p.id, project: p, name: p.name, folders: p.folders, rooms: [] });
     if (!pinned.rooms.length) map.delete('pinned');
     if ((showArchive || needle) && archive.rooms.length) map.set('archive', archive);
-    return [...map.values()];
-  }, [rooms, projects, q, showArchive]);
+    const values = [...map.values()];
+    if (!projectOrder.length) return values;
+    const order = new Map([...new Set([...projectOrder, ...projects.map((p) => p.id)])].map((key, i) => [key, i]));
+    const rank = (g) => g.key === 'pinned' ? -1 : g.key === 'archive' ? Infinity : (order.get(g.key) ?? order.size);
+    return values.sort((a, b) => rank(a) - rank(b));
+  }, [rooms, projects, projectOrder, q, showArchive]);
+  const movable = groups.filter((g) => !['pinned', 'archive'].includes(g.key));
+  const moveGroup = async (from, to) => {
+    if (ordering || from === to || q) return;
+    const keys = movable.map((g) => g.key);
+    const source = keys.indexOf(from);
+    const target = keys.indexOf(to);
+    if (source < 0 || target < 0) return;
+    keys.splice(source, 1);
+    keys.splice(target, 0, from);
+    setOrdering(true);
+    setOrderError('');
+    try { await duo.reorderProjects(keys); }
+    catch (err) { setOrderError(err.message); }
+    finally { setOrdering(false); }
+  };
 
   return (
     <aside class="sidebar">
@@ -283,6 +307,7 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
         Новый чат
       </button>
       <input class="search" type="search" placeholder="Поиск чатов" value={q} onInput={(e) => setQ(e.target.value)} />
+      {orderError && <div class="error-box" role="alert">{orderError}</div>}
       <nav class="rooms">
         {groups.length === 0 && !found.length && <div class="rooms-empty">{rooms.length ? 'Ничего не найдено' : 'Проектов и чатов пока нет'}</div>}
         {found.length > 0 && (
@@ -302,29 +327,40 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
           </div>
         )}
         {groups.map((g) => (
-          <div class="group" key={g.key}>
-            <div class="group-title project-title" title={g.folders.join('\n')}>
+          <div class={`group ${dragging === g.key ? 'group-dragging' : ''} ${dropTarget === g.key ? 'group-drop-target' : ''}`} key={g.key}>
+            <div class="group-title project-title" title={g.folders.join('\n')}
+              draggable={!q && !ordering && movable.some((x) => x.key === g.key)}
+              onDragStart={(e) => { setDragging(g.key); e.dataTransfer.setData('text/duocode-project', g.key); e.dataTransfer.effectAllowed = 'move'; }}
+              onDragOver={(e) => {
+                if (dragging && dragging !== g.key && movable.some((x) => x.key === g.key)) {
+                  e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropTarget(g.key);
+                }
+              }}
+              onDrop={(e) => { e.preventDefault(); moveGroup(dragging, g.key); setDragging(null); setDropTarget(null); }}
+              onDragEnd={() => { setDragging(null); setDropTarget(null); }}
+            >
               <button class="group-toggle" onClick={() => toggle(g.key)}>
                 <Icon name={collapsed[g.key] ? 'right' : 'down'} size={12} />
                 <Icon name={g.special || 'folder'} size={13} />
                 <span class="group-name">{g.name}</span>
                 {g.folders.length > 1 && <span class="group-count">{g.folders.length}</span>}
               </button>
-              {g.plain && (
+              {(g.plain || g.project) && (
                 <span class="group-actions">
-                  <button class="icon-btn tiny" title="Новый чат без проекта" onClick={() => onNewIn(NO_PROJECT)}>
+                  {!q && [-1, 1].map((delta) => {
+                    const i = movable.findIndex((x) => x.key === g.key);
+                    const neighbor = movable[i + delta];
+                    const label = delta < 0 ? 'Переместить выше' : 'Переместить ниже';
+                    return <button key={delta} class="icon-btn tiny" title={label} aria-label={`${g.name}: ${label}`} disabled={ordering || !neighbor} onClick={() => neighbor && moveGroup(g.key, neighbor.key)}>
+                      <Icon name={delta < 0 ? 'up' : 'down'} size={12} />
+                    </button>;
+                  })}
+                  <button class="icon-btn tiny" title={g.plain ? 'Новый чат без проекта' : 'Новый чат в проекте'} onClick={() => onNewIn(g.plain ? NO_PROJECT : g.project.id)}>
                     <Icon name="plus" size={13} />
                   </button>
-                </span>
-              )}
-              {g.project && (
-                <span class="group-actions">
-                  <button class="icon-btn tiny" title="Новый чат в проекте" onClick={() => onNewIn(g.project.id)}>
-                    <Icon name="plus" size={13} />
-                  </button>
-                  <button class="icon-btn tiny" title="Изменить проект: название и папки" onClick={() => onEditProject(g.project)}>
+                  {g.project && <button class="icon-btn tiny" title="Изменить проект: название и папки" onClick={() => onEditProject(g.project)}>
                     <Icon name="settings" size={13} />
-                  </button>
+                  </button>}
                 </span>
               )}
             </div>
@@ -407,6 +443,7 @@ function Sidebar({ rooms, projects = [], currentId, onOpen, onNew, onNewIn, onEd
       <button class="new-project" onClick={() => onEditProject({ name: '', folders: [] })}>
         <Icon name="folder" size={14} /> Новый проект
       </button>
+      <button class="new-project" onClick={onGitHub}><Icon name="branch" size={14} />Проект из GitHub</button>
       <Limits limits={limits} onRefresh={onRefreshLimits} refreshing={refreshing} env={env} />
       <UpdateBanner update={update} />
       <div class="sidebar-foot">
@@ -2430,6 +2467,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
             ['pipelines', 'Сценарии'],
             ['schedules', 'Расписание'],
             ['telegram', 'Telegram'],
+            ['github', 'GitHub'],
             ['general', 'Общие'],
             ['about', 'О программе'],
           ].map(([id, name]) => (
@@ -2442,6 +2480,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
         {tab === 'agents' && <AgentsTab settings={settings} env={env} onSaved={onSaved} />}
         {tab === 'pipelines' && <PipelinesTab settings={settings} onSaved={onSaved} />}
         {tab === 'telegram' && <TelegramTab settings={settings} onSaved={onSaved} />}
+        {tab === 'github' && <GitHubPanel onImported={onSaved} />}
         {tab === 'general' && <GeneralTab settings={settings} onSaved={onSaved} />}
         {tab === 'schedules' && <SchedulesTab settings={settings} />}
         {tab === 'about' && <AboutTab update={update} onUpdate={onUpdate} />}
@@ -2468,6 +2507,7 @@ function App() {
   const [focusTick, setFocusTick] = useState(0);
   const [newIn, setNewIn] = useState(null);
   const [editing, setEditing] = useState(null); // { project, after }
+  const [showGitHub, setShowGitHub] = useState(false);
   const currentRef = useRef(null);
   currentRef.current = currentId;
 
@@ -2588,6 +2628,8 @@ function App() {
         update={update}
         onStats={() => setShowStats(true)}
         projects={settings.workspaces || []}
+        projectOrder={settings.projectOrder || []}
+        onGitHub={() => setShowGitHub(true)}
         onNewIn={(id) => {
           setNewIn(id);
           open(null);
@@ -2639,6 +2681,7 @@ function App() {
         />
       )}
       {showStats && <StatsModal onClose={() => setShowStats(false)} onOpenRoom={(id) => open(id)} />}
+      {showGitHub && <GitHubModal onClose={() => setShowGitHub(false)} onImported={(p) => { loadSettings(); setNewIn(p.id); open(null); }} />}
       {showSettings && <Settings settings={settings} env={env} update={update} onUpdate={(u) => u && setUpdate({ ...u })} onClose={() => setShowSettings(false)} onSaved={loadSettings} />}
     </div>
     </PrefsContext.Provider>

@@ -97,7 +97,18 @@ window.duo = {
   duelApply: (id, duelId, choice) => act('duelApply', id, duelId, choice),
   limits: () => rpc('limits'),
   projects: () => rpc('projects'),
-  openFile: () => {},
+  fileRoots: (roomId) => rpc('fileRoots', roomId),
+  listFiles: (dir) => rpc('listFiles', dir),
+  readFile: (cwd, file) => rpc('readFile', cwd, file),
+  downloadFile: async (file) => {
+    await ready;
+    if (!pass || Date.now() - passAt > 6 * 3600 * 1000) await session();
+    const url = new URL(`api/file?path=${encodeURIComponent(file.path)}&pass=${encodeURIComponent(pass)}`, location.href).href;
+    if (tg && tg.isVersionAtLeast && tg.isVersionAtLeast('8.0') && tg.downloadFile) tg.downloadFile({ url, file_name: file.name });
+    else if (tg) tg.openLink(url);
+    else window.open(url, '_blank', 'noopener,noreferrer');
+  },
+  openFile: (cwd, file) => window.dispatchEvent(new CustomEvent('duo:open-file', { detail: { cwd, file } })),
   copy: (text) => navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}),
   onRooms: on('rooms'),
   onMessages: on('messages'),

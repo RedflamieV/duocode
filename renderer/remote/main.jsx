@@ -6,6 +6,7 @@ import { StableAgentMessage as AgentMessage, StableUserMessage as UserMessage, S
 import { PrefsContext, DEFAULT_PREFS } from '../src/prefs.js';
 import { TitleInput } from '../src/titleinput.jsx';
 import { Lightbox } from '../src/attachments.jsx';
+import { FileBrowser } from './files.jsx';
 
 const duo = window.duo;
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -281,7 +282,7 @@ function Composer({ room, onLocal }) {
   );
 }
 
-function Room({ room, onLocal, onMore, onRetry }) {
+function Room({ room, onLocal, onMore, onRetry, onFiles }) {
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState(null); // новое название, пока сервер не подтвердил
   useEffect(() => setTitle(null), [room.title]);
@@ -336,6 +337,7 @@ function Room({ room, onLocal, onMore, onRetry }) {
             <Icon name={room.noProject ? 'chat' : 'folder'} size={12} /> {room.noProject ? 'без проекта' : baseName(room.cwd)}
           </small>
         </div>
+        <button class="btn small" onClick={onFiles}><Icon name="folder" size={14} />Файлы</button>
         <label class="select">
           <select value={room.settings.mode} onChange={(e) => duo.setRoomSettings(room.id, { mode: e.target.value })}>
             {MODES.map((m) => (
@@ -399,6 +401,7 @@ function App() {
   const [status, setStatus] = useState('connecting');
   const [error, setError] = useState(null);
   const [projects, setProjects] = useState([]);
+  const [files, setFiles] = useState(null);
   const current = useRef(null);
   const limit = useRef(40); // сколько последних сообщений чата загружено
 
@@ -496,16 +499,23 @@ function App() {
 
   // кнопка «Назад» в шапке Telegram
   useEffect(() => {
+    const openFile = (e) => setFiles(e.detail);
+    window.addEventListener('duo:open-file', openFile);
+    return () => window.removeEventListener('duo:open-file', openFile);
+  }, []);
+
+  useEffect(() => {
     if (!tg) return;
     const back = () => {
+      if (files) return setFiles(null);
       current.current = null;
       setScreen('home');
     };
-    if (screen === 'home') tg.BackButton.hide();
+    if (screen === 'home' && !files) tg.BackButton.hide();
     else tg.BackButton.show();
     tg.BackButton.onClick(back);
     return () => tg.BackButton.offClick(back);
-  }, [screen]);
+  }, [screen, files]);
 
   if (error) {
     return (
@@ -524,7 +534,8 @@ function App() {
         {status === 'offline' && <div class="m-offline">Нет связи с компьютером — переподключаюсь…</div>}
         {screen === 'home' && <Home rooms={[...rooms.filter((r) => r.pinned && !r.archived), ...rooms.filter((r) => !r.pinned && !r.archived)]} limits={limits} projects={projects} onOpen={openRoom} onNew={() => setScreen('new')} />}
         {screen === 'new' && <NewChat onCreated={openRoom} />}
-        {screen === 'room' && room && <Room room={room} key={room.id} onMore={loadMore} onRetry={() => openRoom(room.id)} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
+        {screen === 'room' && room && <Room room={room} key={room.id} onMore={loadMore} onRetry={() => openRoom(room.id)} onFiles={() => setFiles({ roomId: room.id })} onLocal={(m) => setRoom((r) => (r ? { ...r, messages: [...r.messages, m] } : r))} />}
+        {files && <FileBrowser key={JSON.stringify(files)} request={files} onClose={() => setFiles(null)} />}
       </div>
     </PrefsContext.Provider>
   );

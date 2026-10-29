@@ -1435,6 +1435,24 @@ code.tool-sub { font-size: 12px; }
 .group-count { font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); font-weight: 500; }
 .group-actions { display: none; gap: 1px; }
 .group:hover .group-actions { display: inline-flex; }
+.group:focus-within .group-actions { display: inline-flex; }
+.project-title[draggable="true"] { cursor: grab; }
+.group-dragging { opacity: 0.45; }
+.group-drop-target > .project-title { outline: 1px solid var(--primary); border-radius: 6px; background: var(--hover); }
+.github-account { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.github-account > span { flex: 1; min-width: 120px; display: flex; flex-direction: column; }
+.github-account small, .github-repo small { color: var(--muted); font-size: 11.5px; }
+.github-repos { margin: 8px 0; max-height: 230px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.github-repo { display: flex; width: 100%; align-items: center; gap: 9px; padding: 10px; text-align: left; border-bottom: 1px solid var(--border); }
+.github-repo:last-child { border-bottom: 0; }
+.github-repo:hover, .github-repo.active { background: var(--hover); }
+.github-repo.active { box-shadow: inset 3px 0 var(--primary); }
+.github-repo > span { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.github-repo b, .github-repo > span small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.github-destination { display: flex; align-items: center; gap: 8px; }
+.github-destination input { flex: 1; min-width: 0; }
+.github-destination .btn { flex-shrink: 0; }
+.github-cli-error { white-space: pre-wrap; overflow-wrap: anywhere; }
 .icon-btn.tiny { width: 22px; height: 22px; border-radius: 6px; }
 .empty-room { color: var(--faint); font-size: 12.5px; gap: 6px; }
 .new-project { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; margin: 4px 0 2px; border-radius: 8px; color: var(--muted); font-size: 13px; }

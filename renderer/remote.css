@@ -87,3 +87,21 @@ body.remote .codeblock pre { font-size: 12px; }
 .m-error b { color: var(--text); font-size: 17px; }
 .m-older { display: block; margin: 4px auto 14px; }
 .thread-empty .btn { display: block; margin: 10px auto 0; }
+/* Файлы компьютера: самостоятельное окно поверх чата, без выполнения содержимого файлов. */
+.m-files-back { position: fixed; inset: 0; z-index: 90; padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)); background: rgba(0,0,0,.45); display: flex; }
+.m-files { display: flex; flex-direction: column; min-width: 0; width: 100%; max-width: 900px; margin: 0 auto; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.m-files .modal-head { padding: 12px 14px; margin: 0; flex-shrink: 0; }
+.m-files h2 { font-size: 16px; }
+.m-file-roots, .m-file-toolbar { display: flex; gap: 8px; padding: 6px 12px; flex-shrink: 0; }
+.m-file-roots { overflow-x: auto; }
+.m-file-roots .btn { white-space: nowrap; }
+.m-file-toolbar .spacer { flex: 1; }
+.m-file-path { padding: 5px 14px 10px; font: 11px/1.4 var(--mono); overflow-wrap: anywhere; color: var(--muted); flex-shrink: 0; }
+.m-file-meta { padding: 0 14px 8px; }
+.m-file-content { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.m-file-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 14px; text-align: left; border-bottom: 1px solid var(--border); }
+.m-file-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.m-file-row:hover { background: var(--hover); }
+.m-file-text { margin: 0; padding: 14px; font: 12px/1.6 var(--mono); tab-size: 2; user-select: text; }
+.m-file-image { display: block; max-width: 100%; height: auto; margin: auto; }
+.attachment[role="button"] { cursor: pointer; }
