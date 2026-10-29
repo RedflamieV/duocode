@@ -84,6 +84,13 @@ contextBridge.exposeInMainWorld('duo', {
   pickProject: () => ipcRenderer.invoke('project:pick'),
   saveProject: (p) => ipcRenderer.invoke('projects:save', p),
   removeProject: (id) => ipcRenderer.invoke('projects:remove', id),
+  reorderProjects: (keys) => ipcRenderer.invoke('projects:reorder', keys),
+  github: {
+    status: () => ipcRenderer.invoke('github:status'),
+    login: () => ipcRenderer.invoke('github:login'),
+    repositories: (page) => ipcRenderer.invoke('github:repositories', page),
+    clone: (fullName, parent) => ipcRenderer.invoke('github:clone', fullName, parent),
+  },
   pickFolders: () => ipcRenderer.invoke('projects:pickFolders'),
   openProject: (dir) => ipcRenderer.invoke('project:open', dir),
   openFile: (cwd, file) => ipcRenderer.invoke('file:open', cwd, file),

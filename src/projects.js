@@ -52,6 +52,21 @@ function save(settings, input) {
 
 function remove(settings, id) {
   settings.workspaces = list(settings).filter((p) => p.id !== id);
+  if (Array.isArray(settings.projectOrder)) settings.projectOrder = settings.projectOrder.filter((key) => key !== id);
+}
+
+// Порядок групп боковой панели, включая «Чаты без проекта». Непереданные группы сохраняем:
+// окно могло ещё не получить новый проект или сейчас показывать результаты поиска.
+function reorder(settings, keys) {
+  if (!Array.isArray(keys) || keys.length > 1000 || keys.some((key) => typeof key !== 'string' || !key || key.length > 4096)) {
+    throw new Error('Некорректный порядок проектов');
+  }
+  const order = [...new Set([...keys, ...(settings.projectOrder || []), ...list(settings).map((p) => p.id)])]
+    .filter((key) => key !== 'pinned' && key !== 'archive');
+  const positions = new Map(order.map((key, i) => [key, i]));
+  settings.projectOrder = order;
+  settings.workspaces = [...list(settings)].sort((a, b) => positions.get(a.id) - positions.get(b.id));
+  return order;
 }
 
 // Папки, с которыми работает чат: основная папка чата + остальные папки его проекта.
@@ -62,4 +77,4 @@ function roomFolders(settings, room) {
   return { main, extra, project };
 }
 
-module.exports = { migrate, list, get, forFolder, save, remove, roomFolders, norm };
+module.exports = { migrate, list, get, forFolder, save, remove, reorder, roomFolders, norm };

@@ -51,9 +51,10 @@ function checkInitData(initData, botToken, ownerId, maxAgeSec = 86400) {
 // ---------- Сервер ----------
 
 class RemoteServer extends EventEmitter {
-  constructor({ root, getAuth, api, resolveImage }) {
+  constructor({ root, getAuth, api, resolveImage, resolveFile }) {
     super();
     this.resolveImage = resolveImage; // (путь) => абсолютный путь картинки, которую можно показать, или null
+    this.resolveFile = resolveFile;
     this.root = root; // папка renderer
     this.getAuth = getAuth; // () => { token, userId }
     this.api = api; // { method: async (...args) => result }
@@ -176,6 +177,29 @@ class RemoteServer extends EventEmitter {
       const TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
       res.writeHead(200, { 'Content-Type': TYPES[path.extname(file).toLowerCase()], 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
       return fs.createReadStream(file).on('error', () => res.end()).pipe(res);
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/file') {
+      if (!this.checkPass(url.searchParams.get('pass'))) return this.json(res, 401, { error: 'Нет доступа' });
+      let file;
+      try { file = this.resolveFile && await this.resolveFile(url.searchParams.get('path') || ''); } catch {}
+      if (!file) return this.json(res, 403, { error: 'Файл вне папок проектов или недоступен' });
+      const stat = await fs.promises.stat(file);
+      if (!stat.isFile()) return this.json(res, 400, { error: 'Это папка' });
+      const name = path.basename(file);
+      const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': stat.size,
+        'Content-Disposition': `attachment; filename="download"; filename*=UTF-8''${encoded}`,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Referrer-Policy': 'no-referrer',
+      });
+      const stream = fs.createReadStream(file);
+      res.on('close', () => stream.destroy());
+      return stream.on('error', () => res.destroy()).pipe(res);
     }
 
     if (req.method === 'POST' && url.pathname === '/api/rpc') {

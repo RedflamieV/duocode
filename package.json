@@ -1,11 +1,12 @@
 {
   "name": "duocode",
   "productName": "DuoCode",
-  "version": "2.22.1",
+  "version": "2.22.2",
   "description": "Claude Code и Codex в одном приложении: общий чат, взаимные вызовы агентов и оба лимита",
   "main": "main.js",
   "private": true,
   "scripts": {
+    "test": "node --test",
     "build": "esbuild renderer/src/app.jsx --bundle --minify --outfile=renderer/dist/app.js --jsx=automatic --jsx-import-source=preact --target=chrome120 && esbuild renderer/remote/main.jsx --bundle --minify --outfile=renderer/dist/remote.js --jsx=automatic --jsx-import-source=preact --target=chrome100,safari15",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder",

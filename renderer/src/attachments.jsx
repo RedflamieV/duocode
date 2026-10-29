@@ -17,11 +17,7 @@ export function Lightbox() {
         e.preventDefault();
         e.stopPropagation();
         const p = fileLink.getAttribute('data-file');
-        if (window.duo.platform === 'telegram') {
-          // на телефоне файл не открыть — картинку покажем, остальное подскажем
-          if (isImage(p)) setSrc(imageUrl(p));
-          else alert(`Файл на компьютере:\n${p}`);
-        } else window.duo.openFile('', p);
+        window.duo.openFile('', p);
         return;
       }
       // картинка из интернета в ответе агента — грузим только по нажатию
@@ -81,7 +77,11 @@ export function Attachments({ items, onRemove }) {
   return (
     <div class="attachments">
       {items.map((a, i) => (
-        <span class={`attachment ${a.image ? 'image' : ''}`} key={a.path} title={a.path}>
+        <span class={`attachment ${a.image ? 'image' : ''}`} key={a.path} title={a.path}
+          role={!onRemove && !a.image ? 'button' : undefined} tabIndex={!onRemove && !a.image ? 0 : undefined}
+          onClick={() => !onRemove && !a.image && window.duo.openFile('', a.path)}
+          onKeyDown={(e) => { if (!onRemove && !a.image && ['Enter', ' '].includes(e.key)) { e.preventDefault(); window.duo.openFile('', a.path); } }}
+        >
           {a.image ? <img class="zoomable" src={imageUrl(a.path)} alt="" /> : <Icon name="read" size={14} />}
           <span class="attachment-name">{a.name}</span>
           {onRemove && (

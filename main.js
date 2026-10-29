@@ -15,7 +15,10 @@ const { Logs } = require('./src/logs');
 const { listCommands } = require('./src/commands');
 const gitx = require('./src/git');
 const { searchFiles } = require('./src/files');
+const { FileAccess } = require('./src/projectFiles');
 const projects = require('./src/projects');
+const { GitHub } = require('./src/github');
+const github = new GitHub();
 const memory = require('./src/memory');
 const { AgentBrowser } = require('./src/browser');
 const { Terminals } = require('./src/terminal');
@@ -969,7 +972,11 @@ function remoteImage(p) {
 }
 
 function setupRemote() {
-
+  const files = new FileAccess(() => [
+    ...projects.list(settings).flatMap((p) => p.folders),
+    ...rooms.list().flatMap((r) => [r.cwd, r.workdir]),
+    ...['attachments', 'worktrees', 'browser'].map((dir) => path.join(app.getPath('userData'), dir)),
+  ]);
   remote = new RemoteServer({
     root: path.join(__dirname, 'renderer'),
     getAuth: () => ({ token: settings.telegram.token, userId: settings.telegram.userId }),
@@ -993,8 +1000,17 @@ function setupRemote() {
       duelApply: (id, duelId, choice) => rooms.applyDuel(id, duelId, choice),
       limits: () => limits,
       projects: () => projects.list(settings),
+      fileRoots: (roomId) => {
+        const room = rooms.get(roomId);
+        if (!room) throw new Error('Чат не найден');
+        const { main, extra } = projects.roomFolders(settings, room);
+        return [...new Set([room.workdir || main, ...extra])].map((p) => ({ name: path.basename(p) || p, path: p }));
+      },
+      listFiles: (dir) => files.list(dir),
+      readFile: (cwd, file) => files.read(cwd, file),
     },
     resolveImage: remoteImage,
+    resolveFile: (file) => files.resolve('', file),
   });
   tunnel = new Tunnel(path.join(app.getPath('userData'), 'bin'));
   tunnel.on('status', (s) => {
@@ -1250,6 +1266,12 @@ function bindIpc() {
   ipcMain.handle('files:search', (_e, cwd, q) => searchFiles(foldersOf(cwd), q));
 
   // проекты
+  ipcMain.handle('projects:reorder', (_e, keys) => {
+    const order = projects.reorder(settings, keys);
+    saveSettings();
+    win.webContents.send('settings', settings);
+    return order;
+  });
   ipcMain.handle('projects:save', (_e, input) => {
     const p = projects.save(settings, input);
     saveSettings();
@@ -1266,6 +1288,30 @@ function bindIpc() {
   ipcMain.handle('projects:pickFolders', async () => {
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'multiSelections', 'createDirectory'] });
     return res.canceled ? [] : res.filePaths;
+  });
+
+  ipcMain.handle('github:status', () => github.status());
+  ipcMain.handle('github:repositories', (_e, page) => github.repositories(page));
+  ipcMain.handle('github:login', () => {
+    const command = resolveCommand('gh');
+    if (!command) throw new Error('Установите GitHub CLI с cli.github.com и перезапустите DuoCode');
+    if (!isWin && process.platform !== 'darwin' && !['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xterm'].some(resolveCommand)) {
+      throw new Error('Не найден терминал для входа. Выполните gh auth login --hostname github.com --git-protocol https --web в своём терминале и нажмите «Проверить вход»');
+    }
+    openLoginConsole(command, ['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web']);
+    return true;
+  });
+  let githubCloning = false;
+  ipcMain.handle('github:clone', async (_e, fullName, parent) => {
+    if (githubCloning) throw new Error('Дождитесь завершения текущего клонирования');
+    githubCloning = true;
+    try {
+      const cloned = await github.clone(fullName, parent);
+      const project = rememberProject(cloned.path);
+      win.webContents.send('settings', settings);
+      rooms.emitRooms();
+      return project;
+    } finally { githubCloning = false; }
   });
 
   // откат правок и дуэль
