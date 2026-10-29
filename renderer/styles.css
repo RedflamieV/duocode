@@ -1133,12 +1133,13 @@ code.tool-sub { font-size: 12px; }
 /* ---------- Настройки ---------- */
 
 .settings-modal { width: min(760px, calc(100vw - 40px)); max-height: calc(100vh - 60px); display: flex; flex-direction: column; }
+.settings-modal > .modal-head, .settings-modal > .tabs-row { flex-shrink: 0; }
 .tabs-row { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 -20px; padding: 0 20px; overflow-x: auto; scrollbar-width: none; }
 .tabs-row::-webkit-scrollbar { display: none; }
 .tab-btn { padding: 8px 10px; white-space: nowrap; flex: none; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 500; }
 .tab-btn:hover { color: var(--text); }
 .tab-btn.active { color: var(--text); border-bottom-color: var(--text); }
-.tab-body { overflow-y: auto; padding: 4px 2px 8px; margin: 0 -2px; }
+.tab-body { min-height: 0; overflow-y: auto; padding: 4px 2px 8px; margin: 0 -2px; }
 .field > label { font-weight: 550; }
 .segmented.wide { display: flex; flex-wrap: wrap; }
 .segmented.wide .seg { flex: 1; justify-content: center; }
@@ -1160,6 +1161,83 @@ code.tool-sub { font-size: 12px; }
 .theme-swatch i { position: absolute; bottom: 7px; width: 12px; height: 12px; border-radius: 3px; }
 .theme-swatch .claude { left: 8px; background: var(--claude); }
 .theme-swatch .codex { left: 16px; bottom: 3px; background: var(--codex); }
+
+/* Локальная коллекция: иллюстрация, собственная палитра и доступный выбор. */
+.theme-picker > .themes:first-of-type { grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); }
+.theme-picker > .themes:first-of-type .theme-card { font-size: 11.5px; }
+.theme-card:focus-visible { outline: 3px solid var(--codex); outline-offset: 3px; }
+.theme-collection-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 20px 0 10px; }
+.theme-collection-heading > span { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+.theme-collection-heading small { color: var(--muted); font-size: 11.5px; }
+.anime-themes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.anime-theme-card {
+  min-width: 0;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  background: var(--card-bg);
+  color: var(--card-ink);
+  border-color: color-mix(in srgb, var(--card-muted) 35%, var(--card-bg));
+}
+.anime-theme-card:hover { color: var(--card-ink); border-color: var(--card-accent); }
+.anime-theme-card.active { color: var(--card-ink); border-color: var(--card-accent); box-shadow: 0 0 0 2px var(--card-accent); }
+.anime-theme-art { display: block; position: relative; width: 100%; height: 112px; overflow: hidden; }
+.anime-theme-art::after { content: ""; position: absolute; inset: 55% 0 0; background: linear-gradient(transparent, #10132530); }
+.anime-theme-art img { width: 100%; height: 100%; object-fit: cover; object-position: center 60%; transition: transform var(--m-slow) var(--m-ease); }
+:root[data-motion="full"] .anime-theme-card:hover img { transform: scale(1.035); }
+.theme-mode { position: absolute; top: 8px; left: 8px; padding: 2px 7px; border-radius: 20px; background: #151a2bd9; color: #fff9ef; font-size: 10px; }
+.theme-selected { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: var(--card-bg); color: var(--card-ink); }
+.theme-caption { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; padding: 11px 12px 12px; }
+.theme-caption b { font-size: 12.5px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.theme-caption small { color: var(--card-muted); font-size: 10.5px; line-height: 1.5; }
+.theme-palette { display: flex; gap: 4px; margin-top: 2px; }
+.theme-palette i { width: 13px; height: 7px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--card-ink) 12%, transparent); }
+
+/* Иллюстрации живут под интерфейсом и не перехватывают клики. */
+:root[data-scene] .app { position: relative; isolation: isolate; }
+.theme-atmosphere { position: absolute; inset: 0 0 0 272px; z-index: -1; overflow: hidden; pointer-events: none; user-select: none; }
+.theme-landscape { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 65% center; opacity: 0.8; }
+.theme-veil { position: absolute; inset: 0; background: linear-gradient(180deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 93%, transparent) 24%, color-mix(in srgb, var(--bg) 58%, transparent) 63%, color-mix(in srgb, var(--bg) 25%, transparent) 100%); }
+:root[data-scene] .room-header { background: var(--bg); }
+:root[data-scene] .scroll { background: color-mix(in srgb, var(--bg) 92%, transparent); }
+:root[data-scene] .composer { border-radius: 14px; }
+:root[data-scene] .composer:focus-within { border-color: var(--theme-accent); box-shadow: 0 0 0 3px var(--theme-glow), var(--shadow); }
+:root[data-scene] .hero h1 { text-shadow: 0 2px 20px var(--bg); }
+:root[data-scene] .hero p { color: var(--text); }
+:root[data-scene] .new-chat { background: linear-gradient(120deg, var(--panel), var(--panel-2)); }
+:root[data-scene] .room.active { box-shadow: inset 3px 0 var(--theme-accent); }
+:root[data-scene] .avatar, :root[data-scene] .todos li.completed .todo-box { color: var(--primary-text); }
+:root[data-scene] .switch-row input:checked + .switch::after { background: var(--primary-text); }
+.theme-particles { position: absolute; inset: 0; opacity: 0.55; }
+.theme-particles i { position: absolute; left: var(--x); top: var(--y); width: 3px; height: 3px; border-radius: 50%; background: var(--theme-accent); opacity: 0.35; }
+.effect-bubbles .theme-particles i { width: calc(5px + var(--i) * 1px); height: calc(5px + var(--i) * 1px); background: transparent; border: 1px solid #a1e9e56e; }
+.effect-fireflies .theme-particles i { background: #f1ddad; box-shadow: 0 0 8px 2px #e4d3ab50; }
+.effect-snow .theme-particles i { width: calc(2px + var(--i) * 0.25px); height: calc(2px + var(--i) * 0.25px); background: #f6f1e8; opacity: 0.55; }
+.effect-rain .theme-particles i { width: 1px; height: 34px; border-radius: 0; background: linear-gradient(transparent, #e7b7dd); transform: rotate(12deg); }
+.effect-horizon .theme-particles i { width: calc(30px + var(--i) * 6px); height: 1px; background: #ffe2cd; top: calc(68% + var(--i) * 2%); }
+.effect-clouds .theme-particles i { width: 180px; height: 42px; border-radius: 50%; background: #fff9e8; opacity: 0.1; }
+.effect-steam .theme-particles i { left: calc(52% + var(--i) * 4%); top: 77%; width: 22px; height: 75px; border-left: 2px solid #fff8dd; border-radius: 50%; background: transparent; opacity: 0.25; }
+.effect-steam .theme-particles i:nth-child(n+4) { display: none; }
+.effect-grain .theme-particles { background-image: repeating-linear-gradient(0deg, transparent 0 3px, #526b7520 3px 4px); opacity: 0.16; }
+
+@keyframes scene-float { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(16px, -25px); } }
+@keyframes scene-snow { from { transform: translate(0, -100px); opacity: 0; } 15%, 80% { opacity: 0.65; } to { transform: translate(40px, 160px); opacity: 0; } }
+@keyframes scene-rain { from { transform: translate(20px, -80px) rotate(12deg); opacity: 0; } 20%, 80% { opacity: 0.5; } to { transform: translate(-45px, 240px) rotate(12deg); opacity: 0; } }
+@keyframes scene-steam { from { transform: translateY(12px) scaleX(0.8); opacity: 0; } 40% { opacity: 0.35; } to { transform: translateY(-65px) scaleX(1.4); opacity: 0; } }
+@keyframes scene-cloud { 0%, 100% { transform: translateX(-30px); } 50% { transform: translateX(40px); } }
+:root[data-motion="full"] .theme-particles i { animation: scene-float var(--duration) ease-in-out var(--delay) infinite; }
+:root[data-motion="full"] .effect-snow .theme-particles i { animation-name: scene-snow; animation-timing-function: linear; }
+:root[data-motion="full"] .effect-rain .theme-particles i { animation-name: scene-rain; animation-duration: 3s; animation-timing-function: linear; }
+:root[data-motion="full"] .effect-steam .theme-particles i { animation-name: scene-steam; animation-duration: 7s; }
+:root[data-motion="full"] :is(.effect-clouds, .effect-horizon) .theme-particles i { animation-name: scene-cloud; animation-duration: 40s; }
+@media (prefers-reduced-motion: reduce) {
+  .theme-particles i { animation: none !important; }
+  .anime-theme-art img { transition: none; transform: none !important; }
+}
+@media (max-width: 580px) {
+  .anime-themes { grid-template-columns: minmax(0, 1fr); }
+  .theme-collection-heading { flex-wrap: wrap; }
+}
 .switch-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); cursor: pointer; }
 .switch-row > span:first-child { flex: 1; }
 .switch-row b { display: block; font-weight: 550; }

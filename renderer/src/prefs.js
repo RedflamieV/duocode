@@ -1,4 +1,7 @@
 import { createContext } from 'preact';
+import { ANIME_THEMES, getTheme } from '../../src/themes.js';
+
+const PALETTE_KEYS = Object.keys(ANIME_THEMES[0].palette);
 
 // Настройки внешнего вида, которые нужны глубоко в дереве (сообщения, поле ввода).
 export const DEFAULT_PREFS = {
@@ -34,6 +37,18 @@ export function applyPrefs(p) {
     applyPrefs.themeTimer = setTimeout(() => root.classList.remove('theme-switching'), 450);
   }
   root.dataset.theme = p.theme;
+  const theme = getTheme(p.theme);
+  for (const key of PALETTE_KEYS) {
+    if (theme?.palette) root.style.setProperty(`--${key}`, theme.palette[key]);
+    else root.style.removeProperty(`--${key}`);
+  }
+  if (theme?.scene) {
+    root.dataset.scene = theme.scene;
+    root.style.colorScheme = theme.base;
+  } else {
+    delete root.dataset.scene;
+    root.style.removeProperty('color-scheme');
+  }
   // «яркие» анимации смягчаются, если в системе включено «уменьшить движение»
   const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   root.dataset.motion = p.motion === 'full' && reduce ? 'subtle' : p.motion || 'full';

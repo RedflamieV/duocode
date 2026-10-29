@@ -22,6 +22,7 @@ const { Terminals } = require('./src/terminal');
 const { Telegram, esc, clip } = require('./src/telegram');
 const { toTelegram, quote, plain } = require('./src/tgformat');
 const { RemoteServer, Tunnel } = require('./src/remote');
+const { THEMES: THEME_CATALOG } = require('./src/themes');
 
 fixPath();
 
@@ -1031,15 +1032,10 @@ async function applyRemote() {
 
 // ---------- Окно ----------
 
-// Цвета фона тем — для окна и системных кнопок в заголовке (сами темы описаны в styles.css).
-const THEMES = {
-  dark: { base: 'dark', color: '#141519', symbolColor: '#c9ccd3' },
-  light: { base: 'light', color: '#f4f4f2', symbolColor: '#3b3d42' },
-  midnight: { base: 'dark', color: '#0d1117', symbolColor: '#c9d1d9' },
-  graphite: { base: 'dark', color: '#1e1e1e', symbolColor: '#cccccc' },
-  sepia: { base: 'light', color: '#f5efe3', symbolColor: '#3b3226' },
-  paper: { base: 'light', color: '#ffffff', symbolColor: '#333333' },
-};
+// Палитра и фон системных кнопок используют один каталог с renderer.
+const THEMES = Object.fromEntries(THEME_CATALOG.filter((theme) => theme.base).map((theme) => [theme.id, {
+  base: theme.base, color: theme.swatch[0], symbolColor: theme.symbolColor,
+}]));
 
 function currentTheme() {
   const t = THEMES[settings.appearance.theme];
