@@ -22,6 +22,7 @@ const peer = (a) => (a === 'claude' ? 'codex' : 'claude');
 const NET_ERROR = /ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|ENETDOWN|getaddrinfo|socket hang up|fetch failed|network|Connection error|connection (was )?(reset|closed|refused|lost)|stream disconnected|error sending request|Unable to connect|offline|нет связи/i;
 
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj && typeof obj[k] === 'string').map((k) => [k, obj[k]]));
+const CONTEXT_LIMIT = 24000; // символов в сводке пропущенного (≈6–8 тыс. токенов)
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
 const INSTRUCTIONS = {
@@ -780,6 +781,7 @@ class Rooms extends EventEmitter {
     const state = { roomId: room.id, cancelled: false };
     this.pipelines.set(id, state);
     const steps = pipeline.steps || [];
+    const linked = new Set(); // агенты, уже получившие выдержки из связанных чатов
     try {
       for (let i = 0; i < steps.length; i++) {
         if (state.cancelled) break;
@@ -795,7 +797,10 @@ class Rooms extends EventEmitter {
         // ждём, пока агент освободится от своего хода (и пока чат на паузе)
         while ((this.main.has(`${room.id}:${agent}`) || room.paused) && !state.cancelled) await new Promise((r) => setTimeout(r, 500));
         if (state.cancelled) break;
-        let { msg: stepMsg, done } = this.runAgent(room, agent, { prompt: context + prompt, attachments: i === 0 ? attachments : [], pipeline: label });
+        // выдержки из связанных чатов агент получает один раз — дальше они уже в его сессии
+        const first = !linked.has(agent);
+        linked.add(agent);
+        let { msg: stepMsg, done } = this.runAgent(room, agent, { prompt: (first ? context : '') + prompt, attachments: i === 0 ? attachments : [], pipeline: label });
         let r = await done;
         // шаг поставили на паузу — после «Продолжить» дожидаемся его продолжения
         while (stepMsg.status === 'paused' && !state.cancelled) {
@@ -947,8 +952,10 @@ class Rooms extends EventEmitter {
     while (room.paused && !state.cancelled) await new Promise((r) => setTimeout(r, 400));
   }
 
-  // Сводка того, что агент пропустил в общем чате.
-  buildContext(room, agent) {
+  // Сводка того, что агент пропустил в общем чате. mark — отметить её увиденной: только для основной
+  // сессии агента. Ответвление (агент был занят, сравнение в копии проекта) получает сводку, но основная
+  // сессия её не видела — иначе она пропала бы для неё навсегда.
+  buildContext(room, agent, mark = true) {
     const since = room.seen[agent] || 0;
     const lines = [];
     for (const m of room.messages) {
@@ -965,9 +972,15 @@ class Rooms extends EventEmitter {
         lines.push(`— ${who} ответил: ${clip(m.finalText, 6000)}`);
       }
     }
-    room.seen[agent] = Date.now();
+    if (mark) room.seen[agent] = Date.now();
     if (!lines.length) return '';
-    return `<duocode_context>\nЧто произошло в общем чате DuoCode без тебя:\n${lines.join('\n')}\n</duocode_context>\n\n`;
+    // общий предел: самое свежее важнее, ранние сообщения агент при нужде найдёт сам (их видно в чате)
+    let size = 0;
+    let from = lines.length;
+    while (from > 0 && size + lines[from - 1].length <= CONTEXT_LIMIT) size += lines[--from].length;
+    if (from === lines.length) from = lines.length - 1; // самое последнее — всегда, пусть и обрезанное выше
+    const skipped = from ? `(ещё ${from} более ранних сообщений пропущено ради экономии контекста)\n` : '';
+    return `<duocode_context>\nЧто произошло в общем чате DuoCode без тебя:\n${skipped}${lines.slice(from).join('\n')}\n</duocode_context>\n\n`;
   }
 
   // isolated: ход в отдельной копии проекта (дуэль) — без общей сессии агента и без отката.
@@ -1018,7 +1031,7 @@ class Rooms extends EventEmitter {
     if (!fork) this.main.set(key, msg.id);
 
     // raw: команда Claude должна стоять в самом начале сообщения, без сводки чата
-    let fullPrompt = raw ? '' : this.buildContext(room, agent);
+    let fullPrompt = raw ? '' : this.buildContext(room, agent, !fork);
     if (requestedBy) {
       fullPrompt += `[Запрос от ${NAME[requestedBy]} через DuoCode. Твой итоговый ответ целиком вернётся ${NAME[requestedBy]}, поэтому отвечай по делу и самодостаточно.]\n\n`;
     }

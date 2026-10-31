@@ -1601,7 +1601,7 @@ code.tool-sub { font-size: 12px; }
 .bar i { transform-origin: left center; animation: grow-x var(--m-slow) var(--m-ease) backwards; }
 
 /* стартовый экран: логотипы агентов покачиваются по очереди */
-.hero-logo .avatar { animation: bob 1.6s ease-in-out infinite alternate; }
+.hero-logo .avatar { animation: bob 1.6s ease-in-out 4 alternate; }
 .hero-logo .avatar + .avatar { animation-delay: 0.8s; }
 .hero { animation: rise var(--m-slow) var(--m-ease) backwards; }
 

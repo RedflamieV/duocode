@@ -190,7 +190,8 @@ class AgentBrowser extends EventEmitter {
     let img = await wc.capturePage();
     if (img.isEmpty()) throw new Error('Не удалось снять страницу: откройте вкладку «Браузер» в DuoCode');
     const { width } = img.getSize();
-    if (width > 1280) img = img.resize({ width: 1280 });
+    // 1024 px хватает, чтобы читать страницу, а агенту такая картинка обходится на треть дешевле
+    if (width > 1024) img = img.resize({ width: 1024 });
     fs.mkdirSync(this.shotDir, { recursive: true });
     const file = path.join(this.shotDir, `shot-${Date.now()}.png`);
     const png = img.toPNG();
