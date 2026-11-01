@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('duo', {
   pickProject: () => ipcRenderer.invoke('project:pick'),
   saveProject: (p) => ipcRenderer.invoke('projects:save', p),
   removeProject: (id) => ipcRenderer.invoke('projects:remove', id),
+  archiveProject: (id, archived) => ipcRenderer.invoke('projects:archive', id, archived),
   reorderProjects: (keys) => ipcRenderer.invoke('projects:reorder', keys),
   github: {
     status: () => ipcRenderer.invoke('github:status'),

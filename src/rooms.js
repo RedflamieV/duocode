@@ -255,6 +255,8 @@ class Rooms extends EventEmitter {
       branch: room.worktree ? room.worktree.branch : null,
       projectId: room.projectId || null,
       noProject: !!room.noProject,
+      // проект чата убран в архив — чат не показываем в списках (кроме закреплённых и поиска)
+      hidden: !!(room.projectId && (this.getSettings().workspaces || []).some((p) => p.id === room.projectId && p.archived)),
       updatedAt: room.updatedAt,
       settings: room.settings,
       context: room.context || {},

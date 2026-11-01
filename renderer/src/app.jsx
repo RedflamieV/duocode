@@ -261,6 +261,8 @@ function Sidebar({ rooms, projects = [], projectOrder = [], currentId, onOpen, o
         else pinned.rooms.push(r);
         continue;
       }
+      // чаты архивных проектов скрыты, но находятся поиском
+      if (r.hidden && !needle) continue;
       const p = r.projectId && byId.get(r.projectId);
       const key = r.noProject ? 'chats' : p ? p.id : `dir:${r.cwd || ''}`;
       const name = r.noProject ? 'Чаты без проекта' : p ? p.name : baseName(r.cwd) || 'Без проекта';
@@ -268,7 +270,7 @@ function Sidebar({ rooms, projects = [], projectOrder = [], currentId, onOpen, o
       if (!map.has(key)) map.set(key, r.noProject ? { key, special: 'chat', plain: true, name, folders: [], rooms: [] } : { key, project: p || null, name, folders: p ? p.folders : [r.cwd], rooms: [] });
       map.get(key).rooms.push(r);
     }
-    if (!needle) for (const p of projects) if (!map.has(p.id)) map.set(p.id, { key: p.id, project: p, name: p.name, folders: p.folders, rooms: [] });
+    if (!needle) for (const p of projects) if (!p.archived && !map.has(p.id)) map.set(p.id, { key: p.id, project: p, name: p.name, folders: p.folders, rooms: [] });
     if (!pinned.rooms.length) map.delete('pinned');
     if ((showArchive || needle) && archive.rooms.length) map.set('archive', archive);
     const values = [...map.values()];
@@ -360,6 +362,9 @@ function Sidebar({ rooms, projects = [], projectOrder = [], currentId, onOpen, o
                   </button>
                   {g.project && <button class="icon-btn tiny" title="Изменить проект: название и папки" onClick={() => onEditProject(g.project)}>
                     <Icon name="settings" size={13} />
+                  </button>}
+                  {g.project && !g.project.archived && <button class="icon-btn tiny" title="Скрыть проект в архив — чаты сохранятся, вернуть можно в Настройках → Архив" onClick={() => duo.archiveProject(g.project.id, true)}>
+                    <Icon name="archive" size={13} />
                   </button>}
                 </span>
               )}
@@ -1569,7 +1574,7 @@ export function ProjectEditor({ project, onClose, onSaved }) {
 }
 
 function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditProject }) {
-  const workspaces = settings.workspaces || [];
+  const workspaces = (settings.workspaces || []).filter((p) => !p.archived);
   // последний выбор запоминаем; удалённый проект — не выбор
   const known = (id) => id === NO_PROJECT || workspaces.some((p) => p.id === id);
   const [projectId, setProjectId] = useState([initialProject, store('project:new')].find((id) => id && known(id)) || (workspaces[0] && workspaces[0].id) || NO_PROJECT);
@@ -2448,6 +2453,47 @@ function AboutTab({ update, onUpdate }) {
   );
 }
 
+// Проекты, убранные в архив: вернуть в боковую панель или удалить совсем.
+function ArchiveTab({ settings }) {
+  const list = (settings.workspaces || []).filter((p) => p.archived);
+  const [rooms, setRooms] = useState([]);
+  useEffect(() => {
+    duo.listRooms().then(setRooms);
+  }, [list.length]);
+  const chats = (id) => rooms.filter((r) => r.projectId === id).length;
+  return (
+    <div class="tab-body">
+      <p class="field-hint">
+        Проекты в архиве не видны в боковой панели, при создании чата, в Telegram и в мини-приложении. Их чаты не удаляются и находятся поиском. Убрать проект в архив — кнопка «в архив» у его названия в боковой панели (видна при наведении).
+      </p>
+      {list.length === 0 && <div class="muted small pad">В архиве пусто.</div>}
+      <div class="sched-list">
+        {list.map((p) => (
+          <div class="sched-item" key={p.id}>
+            <div class="sched-main">
+              <b>{p.name}</b>
+              <small>
+                {p.folders.join(' · ')} · чатов: {chats(p.id)}
+                {p.archivedAt ? ` · в архиве с ${new Date(p.archivedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}` : ''}
+              </small>
+            </div>
+            <button class="btn small" onClick={() => duo.archiveProject(p.id, false)}>
+              Вернуть
+            </button>
+            <button
+              class="btn small danger"
+              title="Убрать проект из DuoCode. Папки на диске не трогаются"
+              onClick={() => confirm(`Удалить проект «${p.name}» из DuoCode? Папки на диске останутся, чаты — тоже (без проекта).`) && duo.removeProject(p.id)}
+            >
+              Удалить
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
   const [tab, setTab] = useState('look');
   const prefs = { ...DEFAULT_PREFS, ...(settings.appearance || {}) };
@@ -2469,6 +2515,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
             ['telegram', 'Telegram'],
             ['github', 'GitHub'],
             ['general', 'Общие'],
+            ['archive', 'Архив'],
             ['about', 'О программе'],
           ].map(([id, name]) => (
             <button key={id} class={`tab-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>
@@ -2483,6 +2530,7 @@ function Settings({ settings, env, onClose, onSaved, update, onUpdate }) {
         {tab === 'github' && <GitHubPanel onImported={onSaved} />}
         {tab === 'general' && <GeneralTab settings={settings} onSaved={onSaved} />}
         {tab === 'schedules' && <SchedulesTab settings={settings} />}
+        {tab === 'archive' && <ArchiveTab settings={settings} />}
         {tab === 'about' && <AboutTab update={update} onUpdate={onUpdate} />}
       </div>
     </div>

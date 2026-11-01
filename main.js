@@ -154,6 +154,12 @@ function createRoom({ projectId, cwd, title, settings: chosen, noProject = false
   let project = projectId && projects.get(settings, projectId);
   if (!project) project = rememberProject(cwd);
   else rememberProject(project.folders[0]);
+  // новый чат в архивном проекте (например, продолжение сессии из его папки) возвращает проект из архива
+  if (project.archived) {
+    project = projects.setArchived(settings, project.id, false);
+    saveSettings();
+    if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
+  }
   return rooms.create({ cwd: project.folders[0], projectId: project.id, title, chosen });
 }
 
@@ -672,7 +678,7 @@ async function botCommand({ name, args }) {
     case 'help':
       return tg.say(HELP + (room ? `\n\nСейчас выбран чат «${esc(room.title)}».` : '\n\nНачните с /chats или /new.'));
     case 'chats': {
-      const all = rooms.list().filter((r) => !r.archived);
+      const all = rooms.list().filter((r) => !r.archived && (!r.hidden || r.pinned));
       const list = [...all.filter((r) => r.pinned), ...all.filter((r) => !r.pinned)].slice(0, 10);
       if (!list.length) return tg.say('Чатов пока нет. Создайте: /new');
       return tg.say(
@@ -681,7 +687,7 @@ async function botCommand({ name, args }) {
       );
     }
     case 'new': {
-      const list = projects.list(settings);
+      const list = projects.active(settings);
       return tg.say('<b>В каком проекте?</b>', [
         [{ text: '💬 Без проекта — просто чат', callback_data: 'c|proj|none' }],
         ...list.slice(0, 12).map((p) => [{ text: `${p.name}${p.folders.length > 1 ? ` · ${p.folders.length} папки` : ''}`, callback_data: `c|proj|${p.id}` }]),
@@ -1000,7 +1006,7 @@ function setupRemote() {
       checkpointDiff: (id, msgId, file) => rooms.checkpointDiff(id, msgId, file),
       duelApply: (id, duelId, choice) => rooms.applyDuel(id, duelId, choice),
       limits: () => limits,
-      projects: () => projects.list(settings),
+      projects: () => projects.active(settings),
       fileRoots: (roomId) => {
         const room = rooms.get(roomId);
         if (!room) throw new Error('Чат не найден');
@@ -1274,6 +1280,12 @@ function bindIpc() {
     win.webContents.send('settings', settings);
     rooms.emitRooms();
     return p;
+  });
+  ipcMain.handle('projects:archive', (_e, id, archived) => {
+    projects.setArchived(settings, id, !!archived);
+    saveSettings();
+    win.webContents.send('settings', settings);
+    rooms.emitRooms();
   });
   ipcMain.handle('projects:remove', (_e, id) => {
     projects.remove(settings, id);

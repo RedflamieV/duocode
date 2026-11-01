@@ -22,6 +22,21 @@ function list(settings) {
   return settings.workspaces || [];
 }
 
+// Проекты, которые не убраны в архив: их показывают боковая панель, новый чат, Telegram и мини-приложение.
+function active(settings) {
+  return list(settings).filter((p) => !p.archived);
+}
+
+// Архив: проект и его чаты скрыты, но ничего не удаляется; вернуть можно в Настройках → Архив.
+function setArchived(settings, id, archived) {
+  settings.workspaces = list(settings).map((p) => {
+    if (p.id !== id) return p;
+    const { archived: _, archivedAt, ...rest } = p;
+    return archived ? { ...rest, archived: true, archivedAt: Date.now() } : rest;
+  });
+  return get(settings, id);
+}
+
 function get(settings, id) {
   return list(settings).find((p) => p.id === id) || null;
 }
@@ -77,4 +92,4 @@ function roomFolders(settings, room) {
   return { main, extra, project };
 }
 
-module.exports = { migrate, list, get, forFolder, save, remove, reorder, roomFolders, norm };
+module.exports = { migrate, list, active, setArchived, get, forFolder, save, remove, reorder, roomFolders, norm };

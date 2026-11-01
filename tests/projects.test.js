@@ -25,3 +25,14 @@ test('invalid ordering cannot corrupt settings', () => {
   assert.throws(() => projects.reorder(settings, 'a'));
   assert.deepEqual(projects.list(settings), [{ id: 'a' }]);
 });
+
+test('archived projects are hidden from active list and can be restored with their data', () => {
+  const settings = { workspaces: [{ id: 'a', name: 'A', folders: ['/a'], instructions: 'x' }, { id: 'b', name: 'B', folders: ['/b'] }] };
+  projects.setArchived(settings, 'a', true);
+  assert.deepEqual(projects.active(settings).map((p) => p.id), ['b']);
+  assert.equal(projects.list(settings).length, 2);
+  assert(projects.get(settings, 'a').archivedAt > 0);
+  projects.setArchived(settings, 'a', false);
+  assert.deepEqual(projects.active(settings).map((p) => p.id), ['a', 'b']);
+  assert.deepEqual(projects.get(settings, 'a'), { id: 'a', name: 'A', folders: ['/a'], instructions: 'x' });
+});

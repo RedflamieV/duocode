@@ -1134,7 +1134,8 @@ code.tool-sub { font-size: 12px; }
 
 .settings-modal { width: min(760px, calc(100vw - 40px)); max-height: calc(100vh - 60px); display: flex; flex-direction: column; }
 .settings-modal > .modal-head, .settings-modal > .tabs-row { flex-shrink: 0; }
-.tabs-row { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 -20px; padding: 0 20px; overflow-x: auto; scrollbar-width: none; }
+.tabs-row { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 -20px; padding: 0 20px; overflow-x: auto; scrollbar-width: none; }
+.settings-modal .tabs-row .tab-btn { flex: none; }
 .tabs-row::-webkit-scrollbar { display: none; }
 .tab-btn { padding: 8px 10px; white-space: nowrap; flex: none; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 500; }
 .tab-btn:hover { color: var(--text); }
@@ -1748,3 +1749,5 @@ body.remote .user-actions { opacity: 1; }
 .thread > .pair:nth-last-child(-n+3) .msg { animation: rise var(--m-med) var(--m-ease) backwards; }
 .scroll.narrow .pair { display: block; width: auto; margin-left: 0; }
 .show-earlier { display: block; margin: 0 auto 22px; }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { border-color: var(--danger); }
