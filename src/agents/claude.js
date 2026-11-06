@@ -95,7 +95,7 @@ function resultText(content) {
  *  done({ text, error, cost, usage })
  * ev.steer(text, attachments) дописывает сообщение в идущую работу; false — если процесс уже закрывается.
  */
-function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, settingsPath, env, addDirs = [] }) {
+function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, mode, model, effort, mcpConfigPath, systemPromptPath, settingsPath, env, providerName = 'Anthropic', addDirs = [] }) {
   const ev = new EventEmitter();
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   args.push('--mcp-config', mcpConfigPath, '--append-system-prompt-file', systemPromptPath);
@@ -171,7 +171,7 @@ function runClaude({ command, prompt, attachments, plan, cwd, sessionId, fork, m
         // Claude Code сам повторяет запрос при сбое сети или сервера — показываем это, а не молчим
         if (e.subtype === 'api_retry') {
           const sec = Math.round((e.retry_delay_ms || e.retry_in_ms || 0) / 1000);
-          const why = e.is_network_down || !e.error_status ? 'нет связи с Anthropic' : `сервер Anthropic ответил ${e.error_status}`;
+          const why = e.is_network_down || !e.error_status ? `нет связи с ${providerName}` : `сервер ${providerName} ответил ${e.error_status}`;
           ev.emit('warning', `Переподключаюсь: ${why}. Попытка ${e.attempt || '?'}${e.max_retries ? ` из ${e.max_retries}` : ''}${sec ? `, через ${sec} с` : ''}…`);
           retrying = true;
         }

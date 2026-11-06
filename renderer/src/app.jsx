@@ -8,6 +8,9 @@ import { TitleInput } from './titleinput.jsx';
 import { SidePanel, StatsModal } from './panels.jsx';
 import { ThemePicker, ThemeBackdrop } from './themes.jsx';
 import { GitHubPanel, GitHubModal } from './github.jsx';
+import { ProviderSettings, ProvidersContext } from './providers.jsx';
+import { providerModels } from '../../src/providers.js';
+import { applyChatDefaults } from './chatDefaults.js';
 
 const duo = window.duo;
 const baseName = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '');
@@ -23,12 +26,6 @@ const MODES = [
   { id: 'full', name: 'Полный доступ', hint: 'Всё без вопросов и без песочницы. Только для проектов, которым вы доверяете' },
 ];
 
-const CLAUDE_MODELS = [
-  { id: '', name: 'По умолчанию', description: 'Модель из настроек Claude Code' },
-  { id: 'opus', name: 'Opus', description: 'Самая сильная, для сложных задач' },
-  { id: 'sonnet', name: 'Sonnet', description: 'Быстрая и сильная, на каждый день' },
-  { id: 'haiku', name: 'Haiku', description: 'Самая быстрая и экономная' },
-];
 
 const DELEGATION = [
   { id: 'auto', name: 'Сам решает', hint: 'Агент сам подключает напарника, когда это реально помогает' },
@@ -919,7 +916,14 @@ function Ring({ pct, size = 16 }) {
   );
 }
 
-function AgentChip({ agent, model, effort, models, efforts, onChange, context, onCommand }) {
+function AgentChip({ agent, model, effort, models, efforts, onChange, context, onCommand, provider = '', onProviderChange, busy = false }) {
+  const profiles = useContext(ProvidersContext);
+  const profile = profiles.find((p) => p.id === provider);
+  const label = agent === 'claude' && provider ? (profile ? profile.name : 'Профиль удалён') : NAME[agent];
+  if (agent === 'claude') {
+    models = providerModels(profiles, provider);
+    if (provider && !(profile && profile.supportsEffort)) efforts = [];
+  }
   const [open, setOpen] = useState(false);
   const ref = useRef();
   useEffect(() => {
@@ -928,14 +932,14 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
-  const modelName = (models.find((m) => m.id === model) || models[0]).name;
+  const modelName = (models.find((m) => m.id === model) || { name: model || 'По умолчанию' }).name;
   const pct = context && context.used && context.window ? Math.min(100, Math.round((context.used / context.window) * 100)) : null;
   return (
     <div class="menu-wrap" ref={ref}>
       <button class={`agent-chip ${open ? 'open' : ''}`} onClick={() => setOpen(!open)} title={`Модель и уровень размышлений ${NAME[agent]}`}>
         <Avatar agent={agent} size={16} />
-        <span>{model ? modelName : NAME[agent]}</span>
-        <span class="chip-effort">{effort ? EFFORT_NAME[effort] || effort : 'авто'}</span>
+        <span>{model ? modelName : label}</span>
+        {efforts.length > 0 && <span class="chip-effort">{effort ? EFFORT_NAME[effort] || effort : 'авто'}</span>}
         {pct != null && (
           <span class="chip-context" title={`Контекст ${NAME[agent]} заполнен на ${pct}%`}>
             <Ring pct={pct} size={14} />
@@ -977,7 +981,17 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
           </div>
           </>
           )}
-          <div class="menu-section">Модель {NAME[agent]}</div>
+          {agent === 'claude' && onProviderChange && <>
+            <div class="menu-section">Профиль Claude Code</div>
+            {[{ id: '', name: 'Claude · обычный вход' }, ...profiles].map((p) => (
+              <button key={p.id} class={`menu-option ${p.id === provider ? 'selected' : ''}`} disabled={busy && p.id !== provider} onClick={() => onProviderChange(p.id)}>
+                <span class="radio" /><span><b>{p.name}</b>{p.id && <small>{p.hasApiKey ? 'Свой API-ключ' : 'Нужен API-ключ в настройках'}</small>}</span>
+              </button>
+            ))}
+            {busy && <small class="menu-note">Смена профиля доступна после завершения работы.</small>}
+            {provider && <small class="menu-note">Лимиты и бюджет подписки Claude к этому API не относятся.</small>}
+          </>}
+          <div class="menu-section">Модель {label}</div>
           {models.map((m) => (
             <button key={m.id} class={`menu-option ${m.id === model ? 'selected' : ''}`} onClick={() => onChange({ model: m.id })}>
               <span class="radio" />
@@ -987,6 +1001,7 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
               </span>
             </button>
           ))}
+          {efforts.length > 0 && <>
           <div class="menu-section">Уровень размышлений</div>
           <button class={`menu-option ${!effort ? 'selected' : ''}`} onClick={() => onChange({ effort: '' })}>
             <span class="radio" />
@@ -1004,6 +1019,7 @@ function AgentChip({ agent, model, effort, models, efforts, onChange, context, o
               </span>
             </button>
           ))}
+          </>}
         </div>
       )}
     </div>
@@ -1141,7 +1157,7 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
   const [budgetOpen, setBudgetOpen] = useState(false);
   useEffect(() => setEditing(false), [room.id]);
   const s = room.settings;
-  const set = (patch) => duo.setRoomSettings(room.id, patch);
+  const set = (patch) => duo.setRoomSettings(room.id, patch).catch((err) => alert(errText(err)));
   const mode = MODES.find((m) => m.id === s.mode) || MODES[0];
   const ctx = room.context || {};
   const delegation = s.delegation || 'auto';
@@ -1188,7 +1204,10 @@ function RoomHeader({ room, codexModels, onDelete, panel, setPanel, project, onE
           agent="claude"
           model={s.claudeModel || ''}
           effort={s.claudeEffort || ''}
-          models={CLAUDE_MODELS}
+          provider={s.claudeProvider || ''}
+          onProviderChange={(id) => set({ claudeProvider: id, claudeModel: '', claudeEffort: '' })}
+          busy={room.running && room.running.claude}
+          models={[]}
           efforts={CLAUDE_EFFORTS}
           onChange={(p) => set('model' in p ? { claudeModel: p.model } : { claudeEffort: p.effort })}
           context={ctx.claude}
@@ -1434,10 +1453,10 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
 
 // ---------- Новый чат ----------
 
-function EnvWarning({ env }) {
+function EnvWarning({ env, customClaude = false }) {
   if (!env) return null;
   const missing = ['claude', 'codex'].filter((a) => !env[a]);
-  const loggedOut = ['claude', 'codex'].filter((a) => env[a] && env[a].loggedIn === false);
+  const loggedOut = ['claude', 'codex'].filter((a) => !(a === 'claude' && customClaude) && env[a] && env[a].loggedIn === false);
   if (!missing.length && !loggedOut.length) return null;
   const win = env.platform === 'win32';
   const hints = {
@@ -1590,7 +1609,10 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
   }, [project]);
   // модели нового чата: по умолчанию — из Настроек → Агенты, здесь можно поменять только для этого чата
   const nc = settings.newChat || {};
-  const [models, setModels] = useState({ claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' });
+  const [models, setModels] = useState({ claudeProvider: nc.claudeProvider || '', claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' });
+  useEffect(() => {
+    setModels({ claudeProvider: nc.claudeProvider || '', claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' });
+  }, [nc.claudeProvider, nc.claudeModel, nc.claudeEffort, nc.codexModel, nc.codexEffort]);
   const [codexModels, setCodexModels] = useState([]);
   useEffect(() => {
     duo.codexModels().then((m) => setCodexModels(m || [])).catch(() => {});
@@ -1643,7 +1665,7 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
           <h1>Над чем работаем?</h1>
           <p>Claude и Codex в одном чате: общий контекст, совместная работа и взаимные проверки.</p>
         </div>
-        <EnvWarning env={env} />
+        <EnvWarning env={env} customClaude={!!models.claudeProvider} />
         <div class="project-row">
           <Icon name="folder" size={15} />
           <label class="select project-select">
@@ -1692,7 +1714,9 @@ function NewChat({ settings, env, onCreated, focusTick, initialProject, onEditPr
             agent="claude"
             model={models.claudeModel}
             effort={models.claudeEffort}
-            models={CLAUDE_MODELS}
+            provider={models.claudeProvider}
+            onProviderChange={(id) => setModel({ claudeProvider: id, claudeModel: '', claudeEffort: '' })}
+            models={[]}
             efforts={CLAUDE_EFFORTS}
             onChange={(p) => setModel('model' in p ? { claudeModel: p.model } : { claudeEffort: p.effort })}
           />
@@ -1867,8 +1891,9 @@ function AgentsTab({ settings, env, onSaved }) {
   const effortName = (id) => (EFFORT_NAME[id] ? EFFORT_NAME[id][0].toUpperCase() + EFFORT_NAME[id].slice(1) : id);
   // модель и уровень размышлений, с которыми открывается новый чат
   const modelRow = (agent) => {
-    const models = agent === 'claude' ? CLAUDE_MODELS.slice(1) : codexModels.map((m) => ({ id: m.id, name: m.name }));
-    const efforts = agent === 'claude' ? CLAUDE_EFFORTS : codexEfforts(codexModels, nc.codexModel);
+    const models = agent === 'claude' ? providerModels(settings.providers, nc.claudeProvider).slice(1) : codexModels.map((m) => ({ id: m.id, name: m.name }));
+    const profile = (settings.providers || []).find((p) => p.id === nc.claudeProvider);
+    const efforts = agent === 'claude' ? (!nc.claudeProvider || (profile && profile.supportsEffort) ? CLAUDE_EFFORTS : []) : codexEfforts(codexModels, nc.codexModel);
     const model = nc[`${agent}Model`] || '';
     const effort = nc[`${agent}Effort`] || '';
     return (
@@ -1885,7 +1910,7 @@ function AgentsTab({ settings, env, onSaved }) {
             setNew({ [`${agent}Model`]: v, ...(ok ? {} : { [`${agent}Effort`]: '' }) });
           }}
         />
-        <Select value={effort} options={[{ id: '', name: 'Размышления по умолчанию' }, ...efforts.map((e) => ({ id: e.id, name: effortName(e.id) }))]} title="Уровень размышлений" onChange={(v) => setNew({ [`${agent}Effort`]: v })} />
+        <Select value={effort} options={[{ id: '', name: efforts.length ? 'Размышления по умолчанию' : 'Задаёт провайдер' }, ...efforts.map((e) => ({ id: e.id, name: effortName(e.id) }))]} title="Уровень размышлений" onChange={(v) => setNew({ [`${agent}Effort`]: v })} />
       </div>
     );
   };
@@ -1893,11 +1918,17 @@ function AgentsTab({ settings, env, onSaved }) {
   const delegation = nc.delegation || 'auto';
   const setNew = (patch) => duo.setSettings({ newChat: patch }).then(onSaved);
   const [applied, setApplied] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState('');
   const applyAll = async () => {
-    const models = { claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' };
-    for (const r of await duo.listRooms()) await duo.setRoomSettings(r.id, { mode, delegation, ...models });
-    setApplied(true);
-    setTimeout(() => setApplied(false), 2000);
+    setApplying(true); setApplyError(''); setApplied(false);
+    try {
+      const models = { claudeProvider: nc.claudeProvider || '', claudeModel: nc.claudeModel || '', claudeEffort: nc.claudeEffort || '', codexModel: nc.codexModel || '', codexEffort: nc.codexEffort || '' };
+      const result = await applyChatDefaults(await duo.listRooms(), { mode, delegation, ...models }, (id, patch) => duo.setRoomSettings(id, patch));
+      if (result.failed.length) setApplyError(`Применено к чатам: ${result.applied}. Не удалось: ${result.failed.map((r) => `«${r.title}»: ${errText(r.error)}`).join('; ')}. Повторите после завершения работы агентов.`);
+      else { setApplied(true); setTimeout(() => setApplied(false), 2000); }
+    } catch (error) { setApplyError(errText(error)); }
+    finally { setApplying(false); }
   };
   return (
     <div class="tab-body">
@@ -1915,15 +1946,18 @@ function AgentsTab({ settings, env, onSaved }) {
       </div>
       <div class="field">
         <label>Модели в новых чатах</label>
+        <div class="auto-row"><span>Профиль Claude Code</span><Select value={nc.claudeProvider || ''} options={[{ id: '', name: 'Claude · обычный вход' }, ...(settings.providers || []).map((p) => ({ id: p.id, name: p.name }))]} onChange={(v) => setNew({ claudeProvider: v, claudeModel: '', claudeEffort: '' })} /></div>
         {modelRow('claude')}
         {modelRow('codex')}
         <div class="field-hint">
           С этими моделью и уровнем размышлений открывается каждый новый чат. Всё, что выше, в открытом чате меняется в его шапке.{' '}
-          <button class="link" onClick={applyAll}>
-            {applied ? 'Применено ко всем чатам' : 'Применить эти настройки ко всем чатам'}
+          <button class="link" disabled={applying} onClick={applyAll}>
+            {applying ? 'Применение…' : applied ? 'Применено ко всем чатам' : 'Применить эти настройки ко всем чатам'}
           </button>
         </div>
+        {applyError && <p class="warn small" role="alert">{applyError}</p>}
       </div>
+      <ProviderSettings settings={settings} onSaved={onSaved} />
       <div class="field">
         <label>Бюджет новых чатов</label>
         <div class="field-row">
@@ -2661,6 +2695,7 @@ function App() {
 
   return (
     <PrefsContext.Provider value={prefs}>
+    <ProvidersContext.Provider value={settings.providers || []}>
     <Lightbox />
     <div class={`app platform-${duo.platform}`}>
       <ThemeBackdrop theme={prefs.theme} />
@@ -2732,6 +2767,7 @@ function App() {
       {showGitHub && <GitHubModal onClose={() => setShowGitHub(false)} onImported={(p) => { loadSettings(); setNewIn(p.id); open(null); }} />}
       {showSettings && <Settings settings={settings} env={env} update={update} onUpdate={(u) => u && setUpdate({ ...u })} onClose={() => setShowSettings(false)} onSaved={loadSettings} />}
     </div>
+    </ProvidersContext.Provider>
     </PrefsContext.Provider>
   );
 }

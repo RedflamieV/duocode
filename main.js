@@ -26,6 +26,7 @@ const { Telegram, esc, clip } = require('./src/telegram');
 const { toTelegram, quote, plain } = require('./src/tgformat');
 const { RemoteServer, Tunnel } = require('./src/remote');
 const { THEMES: THEME_CATALOG } = require('./src/themes');
+const providers = require('./src/providers');
 
 fixPath();
 
@@ -85,6 +86,7 @@ const defaults = {
   projects: [],
   claudeCommand: 'claude',
   codexCommand: 'codex',
+  providers: [],
   refreshMinutes: 3,
   appearance: APPEARANCE,
   telegram: TELEGRAM,
@@ -118,6 +120,7 @@ function loadSettings() {
       appearance: { ...APPEARANCE, ...(saved.appearance || {}) },
       telegram: { ...TELEGRAM, ...(saved.telegram || {}) },
       general: { ...GENERAL, ...(saved.general || {}) },
+      providers: providers.loadProviders(saved.providers || [], openSecret),
     };
     // 2.4.0 привязывал первый чат, написавший /start. Теперь нужен явный ID владельца:
     // старый чат только подставляем в поле как подсказку, но не доверяем ему сами.
@@ -137,8 +140,16 @@ function saveSettings() {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
   // в памяти токен открытый, на диске — зашифрованный (если система умеет шифровать)
   const tokenSealed = sealSecret(settings.telegram && settings.telegram.token);
-  const onDisk = tokenSealed ? { ...settings, telegram: { ...settings.telegram, token: '', tokenSealed } } : settings;
+  const onDisk = {
+    ...settings,
+    providers: providers.saveProviders(settings.providers, (key) => providers.canPersistKeys(safeStorage) ? sealSecret(key) : null),
+    ...(tokenSealed ? { telegram: { ...settings.telegram, token: '', tokenSealed } } : {}),
+  };
   fs.writeFileSync(settingsFile(), JSON.stringify(onDisk, null, 2));
+}
+
+function publicSettings() {
+  return { ...settings, providers: providers.publicProviders(settings.providers), providerKeyStorage: providers.canPersistKeys(safeStorage) };
 }
 
 function rememberProject(dir) {
@@ -158,7 +169,7 @@ function createRoom({ projectId, cwd, title, settings: chosen, noProject = false
   if (project.archived) {
     project = projects.setArchived(settings, project.id, false);
     saveSettings();
-    if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
+    if (win && !win.isDestroyed()) win.webContents.send('settings', publicSettings());
   }
   return rooms.create({ cwd: project.folders[0], projectId: project.id, title, chosen });
 }
@@ -318,7 +329,7 @@ function runSchedule(s) {
   }
   s.lastRun = Date.now();
   saveSettings();
-  if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
+  if (win && !win.isDestroyed()) win.webContents.send('settings', publicSettings());
   // прошлый запуск ещё идёт — не наслаиваем
   if (room.running && (room.running.claude || room.running.codex)) return room.id;
   if (s.telegram) scheduledRooms.add(room.id);
@@ -361,9 +372,13 @@ function sendLimits() {
 }
 
 // «Авто»: задачу берёт агент, у которого больше свободного лимита.
-function pickAgent() {
+function pickAgent(room) {
   const load = (data) => (data && data.ok && data.windows.length ? Math.max(...data.windows.slice(0, 2).map((w) => w.percent)) : 50);
   const installed = (cmd) => !!resolveCommand(cmd);
+  const custom = room && room.settings.claudeProvider;
+  if (custom && installed(settings.claudeCommand)) {
+    return { agent: 'claude', reason: 'Авто → выбранный API-профиль: его лимиты подписки неизвестны' };
+  }
   const c = installed(settings.claudeCommand) ? load(limits.claude) : 999;
   const x = installed(settings.codexCommand) ? load(limits.codex) : 999;
   const agent = x < c ? 'codex' : 'claude';
@@ -511,16 +526,26 @@ function checkForUpdates(manual = false) {
 
 // ---------- Сообщение коммита, статистика чатов ----------
 
-function commitMessage(cwd) {
+function commitMessage(cwd, roomId) {
   return new Promise(async (resolve) => {
     const st = await gitx.status(cwd);
     const files = (st.files || []).map((f) => `${f.kind}: ${f.path}`).join('\n');
     const diff = (await gitx.git(['diff', 'HEAD'], { cwd })).stdout.slice(0, 15000);
     const fallback = `Обновление: ${st.files ? st.files.length : 0} файл(ов)`;
     let proc;
+    let settingsPath;
     try {
-      proc = spawnTool(settings.claudeCommand, ['-p', '--model', 'haiku', '--output-format', 'text', '--tools', ''], { cwd, stdio: ['pipe', 'pipe', 'ignore'] });
+      const room = roomId && rooms.rooms.get(roomId);
+      const connection = providers.claudeOptions(settings, room ? room.settings : settings.newChat);
+      const args = ['-p', '--model', connection.providerId ? connection.model : 'haiku', '--output-format', 'text', '--tools', ''];
+      if (connection.providerId) {
+        settingsPath = path.join(app.getPath('userData'), 'run', `commit-${crypto.randomUUID()}.provider.json`);
+        fs.writeFileSync(settingsPath, JSON.stringify(connection.settings), { mode: 0o600 });
+        args.push('--settings', settingsPath);
+      }
+      proc = spawnTool(settings.claudeCommand, args, { cwd, env: { ...process.env, ...connection.env }, stdio: ['pipe', 'pipe', 'ignore'] });
     } catch {
+      if (settingsPath) fs.rm(settingsPath, { force: true }, () => {});
       return resolve(fallback);
     }
     let out = '';
@@ -528,9 +553,10 @@ function commitMessage(cwd) {
     proc.stdout.on('data', (c) => (out += c));
     proc.on('close', () => {
       clearTimeout(timer);
+      if (settingsPath) fs.rm(settingsPath, { force: true }, () => {});
       resolve(out.trim().replace(/^```\w*\n?|```$/g, '').trim() || fallback);
     });
-    proc.on('error', () => resolve(fallback));
+    proc.on('error', () => { clearTimeout(timer); if (settingsPath) fs.rm(settingsPath, { force: true }, () => {}); resolve(fallback); });
     proc.stdin.end(
       'Напиши сообщение git-коммита для этих изменений: первая строка до 72 символов в повелительном наклонении, ' +
         'при необходимости пустая строка и краткий список. Язык — как в истории проекта, по умолчанию русский. ' +
@@ -1159,13 +1185,13 @@ function bindIpc() {
     const i = list.findIndex((x) => x.id === item.id);
     settings.schedules = i >= 0 ? list.map((x, j) => (j === i ? { ...x, ...item } : x)) : [...list, item];
     saveSettings();
-    win.webContents.send('settings', settings);
+    win.webContents.send('settings', publicSettings());
     return item;
   });
   ipcMain.handle('schedules:remove', (_e, id) => {
     settings.schedules = scheduleList().filter((x) => x.id !== id);
     saveSettings();
-    win.webContents.send('settings', settings);
+    win.webContents.send('settings', publicSettings());
   });
   ipcMain.handle('schedules:run', (_e, id) => {
     const s = scheduleList().find((x) => x.id === id);
@@ -1271,26 +1297,26 @@ function bindIpc() {
   ipcMain.handle('projects:reorder', (_e, keys) => {
     const order = projects.reorder(settings, keys);
     saveSettings();
-    win.webContents.send('settings', settings);
+    win.webContents.send('settings', publicSettings());
     return order;
   });
   ipcMain.handle('projects:save', (_e, input) => {
     const p = projects.save(settings, input);
     saveSettings();
-    win.webContents.send('settings', settings);
+    win.webContents.send('settings', publicSettings());
     rooms.emitRooms();
     return p;
   });
   ipcMain.handle('projects:archive', (_e, id, archived) => {
     projects.setArchived(settings, id, !!archived);
     saveSettings();
-    win.webContents.send('settings', settings);
+    win.webContents.send('settings', publicSettings());
     rooms.emitRooms();
   });
   ipcMain.handle('projects:remove', (_e, id) => {
     projects.remove(settings, id);
     saveSettings();
-    win.webContents.send('settings', settings);
+    win.webContents.send('settings', publicSettings());
     rooms.emitRooms();
   });
   ipcMain.handle('projects:pickFolders', async () => {
@@ -1316,7 +1342,7 @@ function bindIpc() {
     try {
       const cloned = await github.clone(fullName, parent);
       const project = rememberProject(cloned.path);
-      win.webContents.send('settings', settings);
+      win.webContents.send('settings', publicSettings());
       rooms.emitRooms();
       return project;
     } finally { githubCloning = false; }
@@ -1347,7 +1373,7 @@ function bindIpc() {
   ipcMain.handle('git:commit', (_e, cwd, message) => gitx.commitAll(cwd, message));
   ipcMain.handle('git:push', (_e, cwd) => gitx.push(cwd));
   ipcMain.handle('git:init', (_e, cwd) => gitx.init(cwd));
-  ipcMain.handle('git:message', (_e, cwd) => commitMessage(cwd));
+  ipcMain.handle('git:message', (_e, cwd, roomId) => commitMessage(cwd, roomId));
 
   // общая память проекта
   ipcMain.handle('memory:get', (_e, cwd) => ({ text: memory.read(cwd), file: memory.file(cwd) }));
@@ -1362,12 +1388,15 @@ function bindIpc() {
   ipcMain.handle('remote:status', () => ({ ...remoteStatus, port: remote && remote.port }));
   ipcMain.handle('remote:restart', () => tunnel && tunnel.restart('вручную'));
 
-  ipcMain.handle('settings:get', () => settings);
+  ipcMain.handle('settings:get', () => publicSettings());
   ipcMain.handle('settings:set', (_e, patch) => {
     const restartCodex = patch.codexCommand && patch.codexCommand !== settings.codexCommand;
+    const nextProviders = 'providers' in patch ? providers.mergeProviders(patch.providers, settings.providers) : settings.providers;
+    if (patch.providers && rooms) providers.assertProviderChanges(settings.providers, nextProviders, rooms.runs.values());
     settings = {
       ...settings,
       ...patch,
+      providers: nextProviders,
       newChat: { ...settings.newChat, ...(patch.newChat || {}) },
       appearance: { ...settings.appearance, ...(patch.appearance || {}) },
       telegram: { ...settings.telegram, ...(patch.telegram || {}) },
@@ -1383,10 +1412,13 @@ function bindIpc() {
     if (patch.general) applyGeneral();
     if (patch.appearance) {
       applyTheme();
-      if (win && !win.isDestroyed()) win.webContents.send('settings', settings);
+      if (win && !win.isDestroyed()) win.webContents.send('settings', publicSettings());
     }
     if (restartCodex) codex.stop();
-    return settings;
+    if (patch.providers || patch.newChat) {
+      if (win && !win.isDestroyed()) win.webContents.send('settings', publicSettings());
+    }
+    return publicSettings();
   });
 
   ipcMain.handle('project:pick', async () => {

@@ -14,6 +14,7 @@ const { expandCodexPrompt, REVIEW_PROMPT, CODEX_INIT_PROMPT } = require('./comma
 const memory = require('./memory');
 const projects = require('./projects');
 const gitx = require('./git');
+const { claudeOptions } = require('./providers');
 
 const AGENTS = ['claude', 'codex'];
 const NAME = { claude: 'Claude', codex: 'Codex' };
@@ -107,6 +108,8 @@ class Rooms extends EventEmitter {
     this.flushTimer = null;
 
     fs.mkdirSync(runDir, { recursive: true });
+    // Файлы с ключами оставшегося после аварии процесса больше не нужны.
+    for (const name of fs.readdirSync(runDir)) if (name.endsWith('.provider.json')) fs.rmSync(path.join(runDir, name), { force: true });
 
     for (const room of store.loadAll()) {
       // старые версии обрезали заголовок с хвостом «… (ещё N симв.)»
@@ -305,10 +308,12 @@ class Rooms extends EventEmitter {
         delegation: defaults.delegation || 'auto',
         // модели и размышления для новых чатов — из Настроек → Агенты
         claudeModel: defaults.claudeModel || '',
+        claudeProvider: defaults.claudeProvider || '',
         claudeEffort: defaults.claudeEffort || '',
         codexModel: defaults.codexModel || '',
         codexEffort: defaults.codexEffort || '',
-        ...pick(chosen, ['claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']),
+        ...(chosen && typeof chosen.claudeProvider === 'string' && chosen.claudeProvider !== (defaults.claudeProvider || '') ? { claudeModel: '', claudeEffort: '' } : {}),
+        ...pick(chosen, ['claudeProvider', 'claudeModel', 'claudeEffort', 'codexModel', 'codexEffort']),
       },
       sessions: { claude: null, codex: null },
       seen: { claude: now, codex: now },
@@ -406,7 +411,7 @@ class Rooms extends EventEmitter {
 
   // Прирост недельного лимита агента делим между чатами, где он сейчас работает.
   addSpent(agent, delta) {
-    const ids = [...new Set([...this.runs.values()].filter((r) => r.agent === agent && !r.msg.duelId).map((r) => r.room.id))];
+    const ids = [...new Set([...this.runs.values()].filter((r) => r.agent === agent && !r.msg.duelId && !r.msg.providerId).map((r) => r.room.id))];
     if (!ids.length || !(delta > 0)) return;
     for (const id of ids) {
       const room = this.rooms.get(id);
@@ -420,10 +425,12 @@ class Rooms extends EventEmitter {
   }
 
   overBudget(room, agent) {
+    if (agent === 'claude' && room.settings.claudeProvider) return false;
     return !!(room.budget && room.spent && (room.spent[agent] || 0) >= room.budget);
   }
 
   checkBudget(room, agent) {
+    if (agent === 'claude' && room.settings.claudeProvider) return;
     if (!room.budget) return;
     const spent = (room.spent && room.spent[agent]) || 0;
     room.budgetNoted = room.budgetNoted || {};
@@ -485,6 +492,11 @@ class Rooms extends EventEmitter {
   updateSettings(id, patch) {
     const room = this.rooms.get(id);
     if (!room) return;
+    if ('claudeProvider' in patch && patch.claudeProvider !== (room.settings.claudeProvider || '')) {
+      if (typeof patch.claudeProvider !== 'string') throw new Error('Некорректный профиль модели');
+      if ([...this.runs.values()].some((r) => r.room.id === id && r.agent === 'claude')) throw new Error('Дождитесь завершения Claude Code или остановите его перед сменой профиля');
+      patch = { claudeModel: '', claudeEffort: '', ...patch };
+    }
     room.settings = { ...room.settings, ...patch };
     this.touch(room);
     return room.settings;
@@ -540,7 +552,7 @@ class Rooms extends EventEmitter {
     text = (text || '').trim();
     let routed = null;
     if (targets && targets.includes('auto')) {
-      routed = this.pickAgent();
+      routed = this.pickAgent(room);
       targets = [routed.agent];
     }
     targets = (targets || []).filter((t) => AGENTS.includes(t));
@@ -857,7 +869,8 @@ class Rooms extends EventEmitter {
       if (m.role === 'user') lines.push(`## Вы → ${m.targets.map((t) => NAME[t]).join(' и ')}`, '', m.text, '');
       else if (m.role === 'system') lines.push(`> ${m.text}`, '');
       else if (m.role === 'agent') {
-        const head = m.parentId ? `### ${NAME[m.agent]} (по запросу ${NAME[m.requestedBy]})` : `## ${NAME[m.agent]}${m.model ? ` · ${m.model}` : ''}`;
+        const who = m.providerName || NAME[m.agent];
+        const head = m.parentId ? `### ${who} (по запросу ${NAME[m.requestedBy]})` : `## ${who}${m.model ? ` · ${m.model}` : ''}`;
         lines.push(head, '');
         for (const p of m.parts) {
           if (p.kind === 'text') lines.push(p.text, '');
@@ -1007,10 +1020,23 @@ class Rooms extends EventEmitter {
   runAgent(room, agent, opts) {
     const { prompt, raw = false, action = null, review = null, attachments = [], plan = false, requestedBy = null, parentId = null, cwd = null, isolated = false, duelId = null, pipeline = null } = opts;
     const s = room.settings;
-    const runModel = (agent === 'claude' ? s.claudeModel : s.codexModel) || '';
-    const runEffort = (agent === 'claude' ? s.claudeEffort : s.codexEffort) || '';
+    let connection = null;
+    let connectionError = null;
+    if (agent === 'claude') {
+      try { connection = claudeOptions(this.getSettings(), s); } catch (err) { connectionError = err; }
+    }
+    const runModel = (agent === 'claude' ? connection && connection.model : s.codexModel) || '';
+    const runEffort = (agent === 'claude' ? connection && connection.effort : s.codexEffort) || '';
     const key = `${room.id}:${agent}`;
     const fork = isolated || this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
+    if (connection && !isolated && !fork && connection.sessionKey !== (room.claudeProviderKey || '')) {
+      room.sessions.claude = null;
+      room.recap = { ...room.recap, claude: true };
+      room.seen.claude = Date.now();
+      if (room.context) delete room.context.claude;
+      if (room.memorySeen) delete room.memorySeen.claude;
+      room.claudeProviderKey = connection.sessionKey;
+    }
     const workDir = cwd || (room.worktree ? room.worktree.dir : room.cwd);
     const msg = {
       id: uid('m'),
@@ -1028,6 +1054,7 @@ class Rooms extends EventEmitter {
       duelId,
       pipeline,
       effort: runEffort || null,
+      ...(agent === 'claude' ? { providerId: s.claudeProvider || '', providerName: connection && connection.providerId ? connection.providerName : undefined, model: runModel || undefined } : {}),
     };
     room.messages.push(msg);
     if (!fork) this.main.set(key, msg.id);
@@ -1142,6 +1169,7 @@ class Rooms extends EventEmitter {
     };
 
     const start = async () => {
+      if (connectionError) throw connectionError;
       const dirs = isolated ? null : [room.worktree ? room.worktree.dir : projects.roomFolders(this.getSettings(), room).main, ...folders.extra];
       if (dirs) {
         before = [];
@@ -1172,7 +1200,7 @@ class Rooms extends EventEmitter {
       const seen = room.memorySeen;
       const digest = (s) => (s ? crypto.createHash('sha1').update(s).digest('hex') : '');
       let prefix = '';
-      const sys = systemPrompt(agent, settings, folders.project);
+      const sys = systemPrompt(agent, settings, folders.project).replace('you (Claude Code, by Anthropic)', connection && connection.providerId ? `you (model ${connection.model} from ${connection.providerName}, running through Claude Code)` : 'you (Claude Code, by Anthropic)');
       // Codex получает инструкции при запуске треда; если тред уже загружен, а инструкции поменялись —
       // сообщаем об этом в сообщении один раз
       const sysHash = digest(sys);
@@ -1207,8 +1235,9 @@ class Rooms extends EventEmitter {
         fs.writeFileSync(promptFile, sys);
         // язык ответов ещё и встроенной настройкой Claude Code: она надёжнее держит русский
         const lang = { ru: 'russian', en: 'english' }[settings.language || 'ru'];
-        const settingsFile = lang ? path.join(this.runDir, `claude-${lang}.json`) : null;
-        if (settingsFile && !fs.existsSync(settingsFile)) fs.writeFileSync(settingsFile, JSON.stringify({ language: lang }));
+        const settingsFile = path.join(this.runDir, `${msg.id}.provider.json`);
+        tmpFiles.push(settingsFile);
+        fs.writeFileSync(settingsFile, JSON.stringify({ ...(lang ? { language: lang } : {}), ...connection.settings }), { mode: 0o600 });
         handle = runClaude({
           command: settings.claudeCommand,
           prompt: prefix + fullPrompt,
@@ -1220,6 +1249,8 @@ class Rooms extends EventEmitter {
           mode: room.settings.mode,
           model: runModel,
           effort: runEffort,
+          env: connection.env,
+          providerName: connection.providerName,
           mcpConfigPath: mcpFile,
           systemPromptPath: promptFile,
           settingsPath: settingsFile,
@@ -1273,7 +1304,7 @@ class Rooms extends EventEmitter {
         if (effort) msg.effort = effort;
         this.markDirty(room, msg);
       });
-      handle.on('ratelimit', (info) => this.emit('claude-ratelimit', info));
+      handle.on('ratelimit', (info) => { if (!msg.providerId) this.emit('claude-ratelimit', info); });
       handle.on('context', (c) => {
         if (fork) return;
         if (!room.context) room.context = {};

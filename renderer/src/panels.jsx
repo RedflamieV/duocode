@@ -32,7 +32,7 @@ export function DiffView({ diff }) {
 
 const KIND = { modified: 'изменён', added: 'добавлен', new: 'новый', deleted: 'удалён' };
 
-function GitPanel({ cwd }) {
+function GitPanel({ cwd, roomId }) {
   const [st, setSt] = useState(null);
   const [open, setOpen] = useState(null);
   const [diff, setDiff] = useState('');
@@ -125,7 +125,7 @@ function GitPanel({ cwd }) {
         <div class="commit-box">
           <textarea rows={3} placeholder="Сообщение коммита" value={message} onInput={(e) => setMessage(e.target.value)} />
           <div class="approval-actions">
-            <button class="btn small" disabled={!!busy} onClick={() => act('msg', async () => setMessage(await duo.git.message(cwd)))}>
+            <button class="btn small" disabled={!!busy} onClick={() => act('msg', async () => setMessage(await duo.git.message(cwd, roomId)))}>
               {busy === 'msg' ? 'Пишу…' : 'Сгенерировать'}
             </button>
             <button
@@ -535,7 +535,7 @@ export function SidePanel({ room, folders, tab, setTab, onClose }) {
       )}
       <div class="side-body">
         {tab === 'changes' ? (
-          <GitPanel cwd={folder} key={folder} />
+          <GitPanel cwd={folder} key={folder} roomId={room.id} />
         ) : tab === 'browser' ? (
           <BrowserPanel />
         ) : tab === 'terminal' ? (

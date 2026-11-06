@@ -600,7 +600,7 @@ export function AgentMessage({ msg, room, byId, nested = false, onReview }) {
     <div class={`msg agent ${msg.agent} ${nested ? 'nested' : ''} ${msg.status}`}>
       <div class="msg-head">
         <Avatar agent={msg.agent} size={nested ? 20 : 24} />
-        <span class="msg-name">{NAME[msg.agent]}</span>
+        <span class="msg-name">{msg.providerName || NAME[msg.agent]}</span>
         {msg.requestedBy && !nested && <span class="badge">по запросу {NAME[msg.requestedBy]}</span>}
         {msg.plan && <span class="badge">план</span>}
         {msg.duelId && <span class="badge" title="Работает в своей копии проекта">сравнение</span>}

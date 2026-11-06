@@ -69,7 +69,7 @@ contextBridge.exposeInMainWorld('duo', {
     commit: (cwd, message) => ipcRenderer.invoke('git:commit', cwd, message),
     push: (cwd) => ipcRenderer.invoke('git:push', cwd),
     init: (cwd) => ipcRenderer.invoke('git:init', cwd),
-    message: (cwd) => ipcRenderer.invoke('git:message', cwd),
+    message: (cwd, roomId) => ipcRenderer.invoke('git:message', cwd, roomId),
   },
   memoryGet: (cwd) => ipcRenderer.invoke('memory:get', cwd),
   memorySet: (cwd, text) => ipcRenderer.invoke('memory:set', cwd, text),
