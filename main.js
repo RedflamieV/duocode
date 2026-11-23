@@ -82,7 +82,16 @@ const PIPELINES = [
   },
 ];
 
+const ollama = require('./src/agents/ollama');
+const llamaCpp = require('./src/agents/llamaCpp');
+const localClaude = require('./src/agents/localClaude');
+function localResidency(config, load, signal) {
+  if (config.route === 'claude' && config.engine === 'llama.cpp') return localClaude.residency(config, load);
+  return (config.engine === 'llama.cpp' ? llamaCpp : ollama).residency(config.model, load, signal);
+}
+let changingOllama = false;
 const defaults = {
+  ollama: ollama.defaults,
   projects: [],
   claudeCommand: 'claude',
   codexCommand: 'codex',
@@ -1389,7 +1398,31 @@ function bindIpc() {
   ipcMain.handle('remote:restart', () => tunnel && tunnel.restart('вручную'));
 
   ipcMain.handle('settings:get', () => publicSettings());
-  ipcMain.handle('settings:set', (_e, patch) => {
+  ipcMain.handle('local:pickGGUF', async () => {
+    const result = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'GGUF', extensions: ['gguf'] }] });
+    return result.filePaths[0] || '';
+  });
+  ipcMain.handle('ollama:models', () => ollama.models());
+  ipcMain.handle('settings:set', async (_e, patch) => {
+    if ('ollama' in patch) {
+      if (changingOllama || [...rooms.runs.values()].some(run => run.agent === 'ollama'))
+        throw new Error('Дождитесь окончания работы локальной модели.');
+      const next = ollama.validate(patch.ollama);
+      const old = settings.ollama;
+      const changed = next.model !== old.model || next.engine !== (old.engine || 'ollama') || (next.engine === 'llama.cpp' && next.route !== (old.route || 'direct'));
+      changingOllama = true;
+      try {
+        if (old.enabled && (!next.enabled || changed)) await localResidency(old, false);
+        if (next.enabled && (!old.enabled || changed)) {
+          try { await localResidency(next, true); }
+          catch (error) {
+            if (old.enabled) await localResidency(old, true);
+            throw error;
+          }
+        }
+        patch = { ...patch, ollama: next };
+      } finally { changingOllama = false; }
+    }
     const restartCodex = patch.codexCommand && patch.codexCommand !== settings.codexCommand;
     const nextProviders = 'providers' in patch ? providers.mergeProviders(patch.providers, settings.providers) : settings.providers;
     if (patch.providers && rooms) providers.assertProviderChanges(settings.providers, nextProviders, rooms.runs.values());
@@ -1415,7 +1448,7 @@ function bindIpc() {
       if (win && !win.isDestroyed()) win.webContents.send('settings', publicSettings());
     }
     if (restartCodex) codex.stop();
-    if (patch.providers || patch.newChat) {
+    if (patch.ollama || patch.providers || patch.newChat) {
       if (win && !win.isDestroyed()) win.webContents.send('settings', publicSettings());
     }
     return publicSettings();
@@ -1448,6 +1481,11 @@ function bindIpc() {
 
 app.whenReady().then(async () => {
   loadSettings();
+  if (settings.ollama.enabled) {
+    changingOllama = true;
+    localResidency(settings.ollama, true).catch(error => console.warn(error.message))
+      .finally(() => { changingOllama = false; });
+  }
   const userData = app.getPath('userData');
   codex = new CodexServer(() => settings.codexCommand);
   logs = new Logs(path.join(userData, 'logs-index.json'));
@@ -1465,6 +1503,7 @@ app.whenReady().then(async () => {
     chatsDir: path.join(userData, 'chats'),
     runDir: path.join(userData, 'run'),
     bridge,
+    ollamaChanging: () => changingOllama,
     codex,
     getSettings: () => settings,
     checkpoints: new gitx.Checkpoints(path.join(userData, 'checkpoints')),
@@ -1548,12 +1587,25 @@ app.whenReady().then(async () => {
 
 app.on('will-quit', () => globalShortcut.unregisterAll());
 
-app.on('before-quit', () => {
+let releasingOllama = false;
+let releasedOllama = false;
+app.on('before-quit', (event) => {
   app.isQuitting = true;
   if (tunnel) tunnel.stop();
   if (rooms) rooms.shutdown();
   terminals.stopAll();
   if (codex) codex.stop();
+  if (settings.ollama.enabled && !releasedOllama) {
+    event.preventDefault();
+    if (!releasingOllama) {
+      releasingOllama = true;
+      localResidency(settings.ollama, false, AbortSignal.timeout(4000))
+        .catch(error => console.warn(error.message)).finally(() => {
+          releasedOllama = true;
+          app.quit();
+        });
+    }
+  }
 });
 
 app.on('window-all-closed', () => app.quit());

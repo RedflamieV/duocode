@@ -1,4 +1,5 @@
-import { render } from 'preact';
+import { OllamaSettings } from './ollama.jsx';
+import { render, createContext } from 'preact';
 import { useState, useEffect, useRef, useMemo, useCallback, useContext } from 'preact/hooks';
 import { PrefsContext, DEFAULT_PREFS, applyPrefs } from './prefs.js';
 import { Icon, Avatar } from './icons.jsx';
@@ -41,7 +42,9 @@ const CLAUDE_EFFORTS = [
   { id: 'max', description: 'Максимум размышлений: долго и дорого по лимитам' },
 ];
 
+const OllamaContext = createContext(false);
 const TARGETS = [
+  { id: 'ollama', name: 'Ollama', agents: ['ollama'] },
   { id: 'claude', name: 'Claude', agents: ['claude'] },
   { id: 'codex', name: 'Codex', agents: ['codex'] },
   { id: 'both', name: 'Оба', agents: ['claude', 'codex'] },
@@ -566,10 +569,11 @@ function Composer({ onSend, onStop, onPause, onResume, paused = false, running, 
   }, [text]);
 
   const mention = parseMention(text, target);
+  const localEnabled = useContext(OllamaContext);
   const effective = mention.target;
   const agents = TARGETS.find((t) => t.id === effective).agents;
   const steering = !plan && agents.some((a) => busy.includes(a));
-  const canSend = mention.text.trim() || files.length;
+  const canSend = (effective !== 'ollama' || localEnabled) && (mention.text.trim() || files.length);
 
   // @запрос перед курсором (кроме @claude/@codex в самом начале)
   const caret = ref.current ? ref.current.selectionStart : text.length;
@@ -776,7 +780,7 @@ function Composer({ onSend, onStop, onPause, onResume, paused = false, running, 
           <Icon name="clip" size={16} />
         </button>
         <div class="segmented" role="radiogroup" aria-label="Кому отправить">
-          {TARGETS.map((t) => (
+          {TARGETS.filter(t => t.id !== 'ollama' || localEnabled || effective === 'ollama').map((t) => (
             <button
               key={t.id}
               class={`seg ${t.id} ${effective === t.id ? 'active' : ''}`}
@@ -787,7 +791,7 @@ function Composer({ onSend, onStop, onPause, onResume, paused = false, running, 
               {t.agents.map((a) => (
                 <i class={`dot ${a}`} key={a} />
               ))}
-              {t.name}
+              {t.id === 'ollama' ? localEnabled || 'Локальная (выключена)' : t.name}
             </button>
           ))}
         </div>
@@ -1314,7 +1318,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
     duo.commands(room.cwd).then(setCommands);
   }, [room.cwd]);
   const top = room.messages.filter((m) => !m.parentId);
-  const running = room.running && (room.running.claude || room.running.codex);
+  const running = room.running && (room.running.ollama || room.running.claude || room.running.codex);
   // длинный чат рисуем с конца: последние SHOW_STEP, остальное — по кнопке «Показать ранние»
   const items = threadItems(top);
   const [shown, setShown] = useState(SHOW_STEP);
@@ -1425,7 +1429,7 @@ function RoomView({ room, codexModels, onDelete, pipelines, focusTick, highlight
           onResume={() => duo.resume(room.id)}
           paused={room.paused}
           running={running}
-          busy={['claude', 'codex'].filter((a) => room.running && room.running[a])}
+          busy={['claude', 'codex', 'ollama'].filter((a) => room.running && room.running[a])}
           target={target}
           setTarget={setTarget}
           autoFocus={room.id}
@@ -1957,6 +1961,7 @@ function AgentsTab({ settings, env, onSaved }) {
         </div>
         {applyError && <p class="warn small" role="alert">{applyError}</p>}
       </div>
+      {settings.ollama && <OllamaSettings settings={settings} onSaved={onSaved} />}
       <ProviderSettings settings={settings} onSaved={onSaved} />
       <div class="field">
         <label>Бюджет новых чатов</label>
@@ -2695,7 +2700,7 @@ function App() {
 
   return (
     <PrefsContext.Provider value={prefs}>
-    <ProvidersContext.Provider value={settings.providers || []}>
+    <OllamaContext.Provider value={settings.ollama?.enabled && (settings.ollama.engine === 'llama.cpp' ? 'llama.cpp' : 'Ollama')}><ProvidersContext.Provider value={settings.providers || []}>
     <Lightbox />
     <div class={`app platform-${duo.platform}`}>
       <ThemeBackdrop theme={prefs.theme} />
@@ -2767,7 +2772,7 @@ function App() {
       {showGitHub && <GitHubModal onClose={() => setShowGitHub(false)} onImported={(p) => { loadSettings(); setNewIn(p.id); open(null); }} />}
       {showSettings && <Settings settings={settings} env={env} update={update} onUpdate={(u) => u && setUpdate({ ...u })} onClose={() => setShowSettings(false)} onSaved={loadSettings} />}
     </div>
-    </ProvidersContext.Provider>
+    </ProvidersContext.Provider></OllamaContext.Provider>
     </PrefsContext.Provider>
   );
 }

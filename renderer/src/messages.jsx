@@ -6,7 +6,7 @@ import { renderMarkdown } from './markdown.js';
 import { Attachments, imageUrl } from './attachments.jsx';
 import { DiffView } from './panels.jsx';
 
-export const NAME = { claude: 'Claude', codex: 'Codex' };
+export const NAME = { ollama: 'Ollama', claude: 'Claude', codex: 'Codex' };
 export const peerOf = (a) => (a === 'claude' ? 'codex' : 'claude');
 
 export const EFFORT_NAME = {

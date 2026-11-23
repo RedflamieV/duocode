@@ -10,7 +10,7 @@ const ROOM = process.env.DUO_ROOM;
 const AGENT = process.env.DUO_AGENT; // кто нас запустил: claude | codex
 const RUN = process.env.DUO_RUN || null;
 
-const PEER = AGENT === 'claude' ? 'codex' : 'claude';
+const PEER = AGENT !== 'codex' ? 'codex' : 'claude';
 const PEER_NAME = PEER === 'codex' ? 'Codex (OpenAI)' : 'Claude Code (Anthropic)';
 
 const tools = [
@@ -122,7 +122,7 @@ if (process.env.DUO_BROWSER === '1') {
   );
 }
 
-if (AGENT === 'claude') {
+if (AGENT !== 'codex') {
   tools.push({
     name: 'approve',
     description: 'Internal: asks the DuoCode user to approve a tool call.',

@@ -1,7 +1,7 @@
 {
   "name": "duocode",
   "productName": "DuoCode",
-  "version": "2.24.0",
+  "version": "2.25.0",
   "description": "Claude Code и Codex в одном приложении: общий чат, взаимные вызовы агентов и оба лимита",
   "main": "main.js",
   "private": true,
@@ -40,6 +40,7 @@
       "renderer/remote.css"
     ],
     "asarUnpack": [
+      "src/agents/llama_worker.py",
       "bridge/**"
     ],
     "mac": {

@@ -54,6 +54,8 @@ contextBridge.exposeInMainWorld('duo', {
   limits: () => ipcRenderer.invoke('limits:get'),
   refreshLimits: () => ipcRenderer.invoke('limits:refresh'),
   history: () => ipcRenderer.invoke('history:get'),
+  pickGGUF: () => ipcRenderer.invoke('local:pickGGUF'),
+  ollamaModels: () => ipcRenderer.invoke('ollama:models'),
   codexModels: () => ipcRenderer.invoke('codex:models'),
   commands: (cwd) => ipcRenderer.invoke('commands:list', cwd),
   searchFiles: (cwd, q) => ipcRenderer.invoke('files:search', cwd, q),

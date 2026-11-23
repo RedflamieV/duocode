@@ -16,8 +16,12 @@ const projects = require('./projects');
 const gitx = require('./git');
 const { claudeOptions } = require('./providers');
 
+const localClaude = require('./agents/localClaude');
+const llamaCpp = require('./agents/llamaCpp');
+const ollama = require('./agents/ollama');
 const AGENTS = ['claude', 'codex'];
-const NAME = { claude: 'Claude', codex: 'Codex' };
+const CHAT_AGENTS = [...AGENTS, 'ollama'];
+const NAME = { ollama: 'Ollama', claude: 'Claude', codex: 'Codex' };
 const peer = (a) => (a === 'claude' ? 'codex' : 'claude');
 // Ошибки, после которых имеет смысл просто подождать интернет и продолжить.
 const NET_ERROR = /ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|ENETDOWN|getaddrinfo|socket hang up|fetch failed|network|Connection error|connection (was )?(reset|closed|refused|lost)|stream disconnected|error sending request|Unable to connect|offline|нет связи/i;
@@ -83,8 +87,9 @@ function systemPrompt(agent, settings, project) {
 }
 
 class Rooms extends EventEmitter {
-  constructor({ store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, chatsDir = null, pickAgent, browser = null, terminals = null }) {
+  constructor({ ollamaChanging = () => false, store, runDir, bridge, codex, getSettings, checkpoints, worktreeDir, chatsDir = null, pickAgent, browser = null, terminals = null }) {
     super();
+    this.ollamaChanging = ollamaChanging;
     this.chatsDir = chatsDir; // папки чатов без проекта
     this.continuations = new Map(); // id сообщения, поставленного на паузу -> его продолжение
     this.browser = browser;
@@ -217,7 +222,7 @@ class Rooms extends EventEmitter {
   // Связь вернулась: последнему упавшему ходу каждого агента в каждом чате — «продолжи».
   resumeAfterNetwork() {
     for (const room of this.rooms.values()) {
-      for (const agent of AGENTS) {
+      for (const agent of CHAT_AGENTS) {
         const last = [...room.messages].reverse().find((m) => m.role === 'agent' && m.agent === agent && !m.parentId);
         const pending = room.messages.filter((m) => m.netError && !m.netResumed && m.agent === agent);
         for (const m of pending) {
@@ -248,7 +253,7 @@ class Rooms extends EventEmitter {
 
   summary(room) {
     const running = {};
-    for (const a of AGENTS) running[a] = [...this.runs.values()].some((r) => r.room.id === room.id && r.agent === a);
+    for (const a of CHAT_AGENTS) running[a] = [...this.runs.values()].some((r) => r.room.id === room.id && r.agent === a);
     const waiting = [...this.approvals.values()].some((ap) => ap.room.id === room.id);
     return {
       id: room.id,
@@ -555,7 +560,7 @@ class Rooms extends EventEmitter {
       routed = this.pickAgent(room);
       targets = [routed.agent];
     }
-    targets = (targets || []).filter((t) => AGENTS.includes(t));
+    targets = (targets || []).filter((t) => CHAT_AGENTS.includes(t));
     // «#чат» — выдержки из других чатов идут агенту перед текстом; в ленте видны только ссылки
     const linked = (links || []).filter((l) => l !== id && this.rooms.has(l)).slice(0, 5);
     const linkBlock = linked.map((l) => this.linkedChat(l)).join('');
@@ -569,11 +574,11 @@ class Rooms extends EventEmitter {
         this.touch(room);
       });
     };
-    if (room && pipeline && text) return background(this.runPipeline(room, pipeline, text, attachments, linkBlock));
+    if (room && pipeline && text && !targets.includes('ollama')) return background(this.runPipeline(room, pipeline, text, attachments, linkBlock));
     if (room && duel && targets.length === 2 && text) return background(this.duel(room, text, attachments, linkBlock));
     if (!room || (!text && !attachments.length) || !targets.length) return;
     if (!text) text = 'Посмотри вложения.';
-    if (/^\/[\w:.-]+/.test(text)) return this.command(room, text, targets);
+    if (!targets.includes('ollama') && /^\/[\w:.-]+/.test(text)) return this.command(room, text, targets);
     prompt = linkBlock + text;
 
     // новое сообщение снимает паузу: тем, кому оно адресовано, оно и будет продолжением
@@ -943,7 +948,7 @@ class Rooms extends EventEmitter {
     const room = this.rooms.get(id);
     if (!room || !room.paused) return this.get(id);
     room.paused = false;
-    for (const agent of AGENTS) {
+    for (const agent of CHAT_AGENTS) {
       const key = `${room.id}:${agent}`;
       const last = [...room.messages].reverse().find((m) => m.role === 'agent' && m.agent === agent && !m.parentId && !m.duelId);
       if (last && last.status === 'paused' && !last.resumed) {
@@ -1022,14 +1027,18 @@ class Rooms extends EventEmitter {
     const s = room.settings;
     let connection = null;
     let connectionError = null;
-    if (agent === 'claude') {
+    const local = this.getSettings().ollama;
+    const routed = agent === 'ollama' && local?.route === 'claude';
+    if (routed) {
+      try { connection = localClaude.connection(local); } catch (err) { connectionError = err; }
+    } else if (agent === 'claude') {
       try { connection = claudeOptions(this.getSettings(), s); } catch (err) { connectionError = err; }
     }
-    const runModel = (agent === 'claude' ? connection && connection.model : s.codexModel) || '';
-    const runEffort = (agent === 'claude' ? connection && connection.effort : s.codexEffort) || '';
+    const runModel = (agent === 'claude' || routed ? connection && connection.model : s.codexModel) || '';
+    const runEffort = (agent === 'claude' || routed ? connection && connection.effort : s.codexEffort) || '';
     const key = `${room.id}:${agent}`;
     const fork = isolated || this.main.has(key); // агент занят своим ходом — работаем в ответвлении сессии
-    if (connection && !isolated && !fork && connection.sessionKey !== (room.claudeProviderKey || '')) {
+    if (connection && !routed && !isolated && !fork && connection.sessionKey !== (room.claudeProviderKey || '')) {
       room.sessions.claude = null;
       room.recap = { ...room.recap, claude: true };
       room.seen.claude = Date.now();
@@ -1054,6 +1063,7 @@ class Rooms extends EventEmitter {
       duelId,
       pipeline,
       effort: runEffort || null,
+      ...(routed ? { providerName: (local.engine === 'llama.cpp' ? 'llama.cpp' : 'Ollama') + ' · Claude Code', model: path.basename(local.model) } : {}),
       ...(agent === 'claude' ? { providerId: s.claudeProvider || '', providerName: connection && connection.providerId ? connection.providerName : undefined, model: runModel || undefined } : {}),
     };
     room.messages.push(msg);
@@ -1078,7 +1088,7 @@ class Rooms extends EventEmitter {
     const lang = (this.getSettings().language || 'ru');
     if (!raw && REMINDER[lang]) fullPrompt += `\n\n${REMINDER[lang]}`;
 
-    const run = { room, agent, msg, handle: null, stopRequested: false, done: null };
+    const run = { room, agent, msg, localClaude: routed, handle: null, stopRequested: false, done: null };
     this.runs.set(msg.id, run);
     this.markDirty(room, msg);
     this.emitRooms();
@@ -1169,6 +1179,36 @@ class Rooms extends EventEmitter {
     };
 
     const start = async () => {
+      if (routed && (!local.enabled || this.ollamaChanging())) throw new Error('Локальная модель выключена или меняет модель.');
+      if (agent === 'ollama' && !routed) {
+        const settings = this.getSettings();
+        const config = settings.ollama;
+        if (!config?.enabled || this.ollamaChanging()) throw new Error('Локальная модель выключена или меняет модель.');
+        if (attachments.length) throw new Error('Локальный чат поддерживает текст. Вставьте содержимое вложения в сообщение.');
+        const history = [];
+        for (const item of room.messages) {
+          if (item.id === opts.userMsgId || item.id === msg.id) break;
+          if (item.role === 'user') history.push({ role: 'user', content: item.text });
+          if (item.role === 'agent' && item.finalText) history.push({ role: 'assistant', content: item.finalText });
+        }
+        msg.model = config.model;
+        msg.effort = null;
+        const native = config.engine === 'llama.cpp';
+        if (native) {
+          msg.model = path.basename(config.model);
+          msg.providerName = 'llama.cpp';
+        }
+        const handle = (native ? llamaCpp : ollama).run(config, [
+          { role: 'system', content: standing(settings, folders.project) },
+          ...history, { role: 'user', content: (plan ? 'Предложи план.\n' : '') + prompt },
+        ]);
+        run.handle = handle;
+        handle.on('draft', text => { msg.draft = text; this.markDirty(room, msg); });
+        handle.on('part', part => msg.parts.push(part));
+        handle.on('done', result => finish(result).catch(() => resolveDone(result)));
+        if (run.stopRequested) handle.stop();
+        return;
+      }
       if (connectionError) throw connectionError;
       const dirs = isolated ? null : [room.worktree ? room.worktree.dir : projects.roomFolders(this.getSettings(), room).main, ...folders.extra];
       if (dirs) {
@@ -1200,7 +1240,7 @@ class Rooms extends EventEmitter {
       const seen = room.memorySeen;
       const digest = (s) => (s ? crypto.createHash('sha1').update(s).digest('hex') : '');
       let prefix = '';
-      const sys = systemPrompt(agent, settings, folders.project).replace('you (Claude Code, by Anthropic)', connection && connection.providerId ? `you (model ${connection.model} from ${connection.providerName}, running through Claude Code)` : 'you (Claude Code, by Anthropic)');
+      const sys = systemPrompt(routed ? 'claude' : agent, settings, folders.project).replace('you (Claude Code, by Anthropic)', connection && connection.providerId ? `you (model ${connection.model} from ${connection.providerName}, running through Claude Code)` : 'you (Claude Code, by Anthropic)');
       // Codex получает инструкции при запуске треда; если тред уже загружен, а инструкции поменялись —
       // сообщаем об этом в сообщении один раз
       const sysHash = digest(sys);
@@ -1213,14 +1253,14 @@ class Rooms extends EventEmitter {
       }
       if (!raw) {
         const memHash = digest(memoryBlock);
-        if (memoryBlock && (isolated || seen[agent] !== memHash)) prefix += `${memoryBlock}\n\n`;
+        if (memoryBlock && (routed || isolated || seen[agent] !== memHash)) prefix += `${memoryBlock}\n\n`;
         if (!isolated) seen[agent] = memHash;
         const dirsHash = digest(projectNote);
-        if (projectNote && !isolated && seen[`${agent}Dirs`] !== dirsHash) prefix += `[${projectNote}]\n\n`;
+        if (projectNote && !isolated && (routed || seen[`${agent}Dirs`] !== dirsHash)) prefix += `[${projectNote}]\n\n`;
         if (!isolated) seen[`${agent}Dirs`] = dirsHash;
       }
       let handle;
-      if (agent === 'claude') {
+      if (agent === 'claude' || routed) {
         const mcpFile = path.join(this.runDir, `${msg.id}.mcp.json`);
         const promptFile = path.join(this.runDir, `${msg.id}.prompt.md`);
         tmpFiles.push(mcpFile, promptFile);
@@ -1228,7 +1268,7 @@ class Rooms extends EventEmitter {
           mcpFile,
           JSON.stringify({
             mcpServers: {
-              duo: { type: 'stdio', command: this.bridge.command, args: [this.bridge.script], env: { ...env, DUO_AGENT: 'claude', DUO_RUN: msg.id } },
+              duo: { type: 'stdio', command: this.bridge.command, args: [this.bridge.script], env: { ...env, DUO_AGENT: agent, DUO_RUN: msg.id } },
             },
           }),
         );
@@ -1240,12 +1280,12 @@ class Rooms extends EventEmitter {
         fs.writeFileSync(settingsFile, JSON.stringify({ ...(lang ? { language: lang } : {}), ...connection.settings }), { mode: 0o600 });
         handle = runClaude({
           command: settings.claudeCommand,
-          prompt: prefix + fullPrompt,
+          prompt: routed ? this.history(room, agent, [msg.id, opts.userMsgId], 'Предыдущие сообщения чата:') + prefix + prompt : prefix + fullPrompt,
           attachments,
           plan,
           cwd: workDir,
-          sessionId: isolated ? null : room.sessions.claude,
-          fork: fork && !isolated && !!room.sessions.claude,
+          sessionId: isolated || routed ? null : room.sessions.claude,
+          fork: !routed && fork && !isolated && !!room.sessions.claude,
           mode: room.settings.mode,
           model: runModel,
           effort: runEffort,
@@ -1490,9 +1530,9 @@ ${t.tail(proc.id, 40) || '(пока пусто)'}` };
 
   async handleBridge({ room: roomId, agent, run: runId, tool, args }) {
     const room = this.rooms.get(roomId);
-    if (!room || !AGENTS.includes(agent)) return { isError: true, text: 'Чат DuoCode не найден' };
-    const from = this.findRun(roomId, agent, runId);
-    if (!from) return { isError: true, text: 'В DuoCode нет активного хода для этого вызова' };
+    if (!room || !CHAT_AGENTS.includes(agent)) return { isError: true, text: 'Чат DuoCode не найден' };
+    const from = runId ? this.runs.get(runId) : this.findRun(roomId, agent, null);
+    if (!from || from.room.id !== roomId || from.agent !== agent || (agent === 'ollama' && !from.localClaude)) return { isError: true, text: 'В DuoCode нет активного хода для этого вызова' };
 
     if (tool === 'approve') {
       const toolName = args.tool_name;

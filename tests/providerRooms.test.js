@@ -147,3 +147,42 @@ test('applying defaults continues after a busy chat and reports the skipped chat
   assert.equal(result.failed.length, 1);
   assert.equal(result.failed[0].id, busy.id);
 });
+
+test('Ollama chat uses the selected local model, preserves history and respects disable', async (t) => {
+  const { rooms, room, settings } = setup(t);
+  const requests = [];
+  t.mock.method(global, 'fetch', async (url, options) => {
+    assert.equal(url, 'http://127.0.0.1:11434/api/chat');
+    requests.push(JSON.parse(options.body));
+    return { ok: true, json: async () => ({ message: { content: 'Local answer' } }) };
+  });
+  settings.ollama = { enabled: true, model: 'local:test', temperature: 0.3 };
+  async function send(text) {
+    const finished = new Promise(resolve => rooms.once('finished', (_, message) => resolve(message)));
+    rooms.send(room.id, { text, targets: ['ollama'] });
+    return finished;
+  }
+  assert.equal((await send('First')).finalText, 'Local answer');
+  assert.equal((await send('Second')).model, 'local:test');
+  assert.equal(requests[1].options.temperature, 0.3);
+  assert.deepEqual(requests[1].messages.slice(1).map(m => m.content), ['First', 'Local answer', 'Second']);
+  settings.ollama.enabled = false;
+  assert.match((await send('Third')).error, /выключена/);
+  assert.equal(requests.length, 2);
+});
+
+test('local Claude Code receives the Ollama endpoint, MCP config and isolated history', async (t) => {
+  const { rooms, room, settings } = setup(t);
+  settings.ollama = { enabled: true, model: 'local-tools', engine: 'ollama', route: 'claude' };
+  room.sessions.claude = 'cloud-session';
+  const { msg, done } = rooms.runAgent(room, 'ollama', { prompt: 'Hello' });
+  const result = await done;
+  assert.ok(!result.error, result.error);
+  const actual = JSON.parse(result.text);
+  assert.equal(actual.url, 'http://127.0.0.1:11434');
+  assert.equal(actual.alias, 'local-tools');
+  assert.ok(actual.args.includes('--mcp-config'));
+  assert.ok(!actual.args.includes('--resume'));
+  assert.equal(room.sessions.claude, 'cloud-session');
+  assert.equal(msg.providerName, 'Ollama · Claude Code');
+});
